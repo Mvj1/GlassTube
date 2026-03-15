@@ -873,44 +873,57 @@ if ~isfield(rightEndData, 'innerDiaMm') || isempty(rightEndData.innerDiaMm) || ~
 end
 
 tubeID = min(leftEndData.innerDiaMm, rightEndData.innerDiaMm);
-xVal = pathTbl.X / cfg.scale.sidePxPerMm;
-topY = fillmissing(pathTbl.TopY, 'linear') / cfg.scale.sidePxPerMm;
-botY = fillmissing(pathTbl.BotY, 'linear') / cfg.scale.sidePxPerMm;
-midY = (topY + botY) / 2;
+cavity = build_analysis_cavity(pathTbl, leftEndData, rightEndData, cfg);
+opt = optimize_straight_rod_axis(cavity.x, cavity.innerTop, cavity.innerBot);
 
-lineFit = polyfit(xVal, midY, 1);
-baseY = polyval(lineFit, xVal);
-dev = midY - baseY;
+rodDia = min(opt.sideLimit, tubeID);
+rodDia = max(0, rodDia);
 
-maxDev = max(dev);
-minDev = min(dev);
-totalBend = maxDev - minDev;
-rodDia = tubeID - totalBend;
-
-if rodDia <= 0
-    fprintf('Glass tube bend is too large for straight rod insertion.\n');
-    rodDia = 0;
+if rodDia == 0
+    fprintf('No feasible straight rod diameter was found in the 2D cavity model.\n');
 end
 
-fprintf('================ 计算结果 ================\n');
+if opt.sideLimit <= tubeID
+    limitLabel = 'side-view cavity';
+else
+    limitLabel = 'end-face minimum diameter';
+end
+
+centerLine = opt.slope * cavity.x + opt.intercept;
+rodTop = centerLine - rodDia / 2;
+rodBot = centerLine + rodDia / 2;
+flatTop = cavity.innerTop - centerLine;
+flatBot = cavity.innerBot - centerLine;
+
+fprintf('================ Results ================\n');
 % fprintf('Left end inner diameter: %.2f mm (%.2f px)\n', leftEndData.innerDiaMm, leftEndData.innerDiaPx);
 % fprintf('Right end inner diameter: %.2f mm (%.2f px)\n', rightEndData.innerDiaMm, rightEndData.innerDiaPx);
-% fprintf('Tube inner diameter used: %.2f mm\n', tubeID);
-% fprintf('Centerline bend span: %.2f mm\n', totalBend);
-% fprintf('------------------------------------------\n');
+% fprintf('2D side-view cavity limit: %.2f mm\n', opt.sideLimit);
+% fprintf('End-face minimum diameter limit: %.2f mm\n', tubeID);
+% fprintf('Active limit: %s\n', limitLabel);
+% fprintf('Optimal rod axis slope: %.6f mm/mm\n', opt.slope);
+% fprintf('Optimal rod axis intercept: %.3f mm\n', opt.intercept);
 fprintf('Maximum straight rod diameter: %.2f mm\n', rodDia);
-fprintf('==========================================\n');
+fprintf('=========================================\n');
 
-figure('Name', 'Rod insertion analysis', 'Units', 'normalized', 'Position', [0.1, 0.1, 0.8, 0.8]);
+
+figure('Name', 'Rod insertion analysis', 'Units', 'normalized', 'Position', [0.08, 0.08, 0.84, 0.82]);
 
 subplot(2, 1, 1);
 hold on;
-plot(xVal, topY, 'w-', 'LineWidth', 1);
-plot(xVal, botY, 'w-', 'LineWidth', 1);
-plot(xVal, midY, 'b--', 'LineWidth', 1);
-plot(xVal, baseY, 'g-', 'LineWidth', 1.5);
-title('Tube centerline in side view');
-legend('Top wall', 'Bottom wall', 'Actual centerline', 'Ideal straight axis');
+plot(cavity.x, cavity.outerTop, 'Color', [0.55, 0.55, 0.55], 'LineWidth', 1);
+plot(cavity.x, cavity.outerBot, 'Color', [0.55, 0.55, 0.55], 'LineWidth', 1);
+plot(cavity.x, cavity.innerTop, 'w-', 'LineWidth', 1.5);
+plot(cavity.x, cavity.innerBot, 'w-', 'LineWidth', 1.5);
+plot(cavity.x, centerLine, 'c--', 'LineWidth', 1.5);
+plot(cavity.x, rodTop, 'g-', 'LineWidth', 1.2);
+plot(cavity.x, rodBot, 'g-', 'LineWidth', 1.2);
+plot([cavity.x(opt.topTouchIdx); cavity.x(opt.botTouchIdx)], ...
+    [cavity.innerTop(opt.topTouchIdx); cavity.innerBot(opt.botTouchIdx)], ...
+    'rx', 'MarkerSize', 10, 'LineWidth', 2);
+title(sprintf('2D cavity model and optimal straight rod (diameter = %.2f mm)', rodDia));
+legend('Outer top', 'Outer bottom', 'Estimated inner top', 'Estimated inner bottom', ...
+    'Optimal rod axis', 'Rod top', 'Rod bottom', 'Limiting points');
 axis equal;
 grid on;
 set(gca, 'YDir', 'reverse');
@@ -919,24 +932,15 @@ ylabel('Height (mm)');
 
 subplot(2, 1, 2);
 hold on;
-flatTop = topY - baseY;
-flatBot = botY - baseY;
-flatMid = midY - baseY;
-
-fill([xVal; flipud(xVal)], [flatTop; flipud(flatBot)], [0.3, 0.3, 0.9], 'EdgeColor', 'none');
-plot(xVal, flatTop, 'w-', 'LineWidth', 1);
-plot(xVal, flatBot, 'w-', 'LineWidth', 1);
-plot(xVal, flatMid, 'b--', 'LineWidth', 0.5);
-
-limTop = max(flatTop);
-limBot = min(flatBot);
-rodArea = fill([xVal(1), xVal(end), xVal(end), xVal(1)], ...
-    [limTop, limTop, limBot, limBot], 'g', 'FaceAlpha', 0.4, 'EdgeColor', 'g');
-
-plot(xVal(flatTop == limTop), limTop, 'rx', 'MarkerSize', 10, 'LineWidth', 2);
-plot(xVal(flatBot == limBot), limBot, 'rx', 'MarkerSize', 10, 'LineWidth', 2);
-
-title(sprintf('Clear passage analysis (diameter = %.2f mm)', rodDia));
+fill([cavity.x; flipud(cavity.x)], [flatTop; flipud(flatBot)], [0.3, 0.3, 0.9], 'EdgeColor', 'none');
+plot(cavity.x, flatTop, 'w-', 'LineWidth', 1.2);
+plot(cavity.x, flatBot, 'w-', 'LineWidth', 1.2);
+rodArea = fill([cavity.x(1); cavity.x(end); cavity.x(end); cavity.x(1)], ...
+    [-rodDia / 2; -rodDia / 2; rodDia / 2; rodDia / 2], 'g', 'FaceAlpha', 0.35, 'EdgeColor', 'g');
+plot([cavity.x(opt.topTouchIdx); cavity.x(opt.botTouchIdx)], ...
+    [flatTop(opt.topTouchIdx); flatBot(opt.botTouchIdx)], ...
+    'rx', 'MarkerSize', 10, 'LineWidth', 2);
+title(sprintf('Flattened 2D clearance relative to optimal axis (%s-limited)', limitLabel));
 ylabel('Relative offset (mm)');
 xlabel('Tube length (mm)');
 yline(0, 'k--');
@@ -946,6 +950,105 @@ set(gca, 'YDir', 'reverse');
 
 % saveas(gcf, cfg.file.rod);
 % fprintf('Rod insertion analysis saved to %s\n', cfg.file.rod);
+end
+
+
+function cavity = build_analysis_cavity(pathTbl, leftEndData, rightEndData, cfg)
+xVal = pathTbl.X / cfg.scale.sidePxPerMm;
+outerTop = fillmissing(pathTbl.TopY, 'linear') / cfg.scale.sidePxPerMm;
+outerBot = fillmissing(pathTbl.BotY, 'linear') / cfg.scale.sidePxPerMm;
+outerCtr = smoothdata((outerTop + outerBot) / 2, 'rloess', 50);
+
+leftSupport = extract_end_inner_support(leftEndData, cfg);
+rightSupport = extract_end_inner_support(rightEndData, cfg);
+
+if numel(xVal) < 2
+    error('Not enough side-view samples for rod analysis.');
+end
+
+t = (xVal - xVal(1)) / max(eps, xVal(end) - xVal(1));
+topRel = (1 - t) * leftSupport.topRel + t * rightSupport.topRel;
+botRel = (1 - t) * leftSupport.botRel + t * rightSupport.botRel;
+
+innerTop = outerCtr + topRel;
+innerBot = outerCtr + botRel;
+
+% inner cavity must remain inside the observed outer envelope.
+innerTop = max(innerTop, outerTop);
+innerBot = min(innerBot, outerBot);
+
+valid = isfinite(xVal) & isfinite(innerTop) & isfinite(innerBot) & (innerBot > innerTop);
+if nnz(valid) < 2
+    error('Estimated inner cavity is invalid for rod analysis.');
+end
+
+cavity.x = xVal(valid);
+cavity.outerTop = outerTop(valid);
+cavity.outerBot = outerBot(valid);
+cavity.outerCtr = outerCtr(valid);
+cavity.innerTop = innerTop(valid);
+cavity.innerBot = innerBot(valid);
+cavity.leftSupport = leftSupport;
+cavity.rightSupport = rightSupport;
+end
+
+
+function support = extract_end_inner_support(endData, cfg)
+ptsOut = fix_dims(readmatrix(endData.outerFile));
+ptsIn = fix_dims(readmatrix(endData.innerFile));
+ctrOut = mean(ptsOut, 1);
+relY = ptsIn(:, 1) - ctrOut(1);
+
+support.topRel = min(relY) / cfg.scale.endPxPerMm;
+support.botRel = max(relY) / cfg.scale.endPxPerMm;
+support.projDia = support.botRel - support.topRel;
+support.centerRel = mean(relY) / cfg.scale.endPxPerMm;
+end
+
+
+function opt = optimize_straight_rod_axis(xVal, innerTop, innerBot)
+centerLine = (innerTop + innerBot) / 2;
+localSlope = diff(centerLine) ./ diff(xVal);
+localSlope = localSlope(isfinite(localSlope));
+baseSlope = polyfit(xVal, centerLine, 1);
+baseSlope = baseSlope(1);
+
+if isempty(localSlope)
+    slopeAbs = max(abs(baseSlope), 0.02);
+else
+    slopeAbs = max(abs([localSlope(:); baseSlope]));
+    slopeAbs = max(slopeAbs, 0.02);
+end
+
+slopeGrid = linspace(-slopeAbs - 0.05, slopeAbs + 0.05, 4001);
+clearanceGrid = -inf(size(slopeGrid));
+interceptGrid = zeros(size(slopeGrid));
+topIdxGrid = ones(size(slopeGrid));
+botIdxGrid = ones(size(slopeGrid));
+
+for k = 1:numel(slopeGrid)
+    [clearanceGrid(k), interceptGrid(k), topIdxGrid(k), botIdxGrid(k)] = ...
+        evaluate_axis_clearance(slopeGrid(k), xVal, innerTop, innerBot);
+end
+
+[bestClear, bestIdx] = max(clearanceGrid);
+opt.slope = slopeGrid(bestIdx);
+opt.intercept = interceptGrid(bestIdx);
+opt.sideLimit = bestClear;
+opt.topTouchIdx = topIdxGrid(bestIdx);
+opt.botTouchIdx = botIdxGrid(bestIdx);
+end
+
+
+function [clearance, intercept, topIdx, botIdx] = evaluate_axis_clearance(slope, xVal, innerTop, innerBot)
+topShift = innerTop - slope * xVal;
+botShift = innerBot - slope * xVal;
+
+[topLim, topIdx] = max(topShift);
+[botLim, botIdx] = min(botShift);
+
+clearance = botLim - topLim;
+intercept = (topLim + botLim) / 2;
 end
 
 
