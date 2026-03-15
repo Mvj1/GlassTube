@@ -1,31 +1,34 @@
 %% 玻璃管图像处理与三维重建
 % 顶部相机移速900px/5s，顶部相机缩放比例1060px/30mm，侧边相机缩放比例2427px/30mm
-% 待办：1.定标采用canny算子对标准块分析的方法；2.端面内径后续计算统一以"端面轮廓与壁厚分析"阶段得到的 innerFit.r * 2
-% 为来源，左右端同时存在时取较小值；3.端面贴图在建模两端的上下左右镜像方向可能存在错误
 
+%% 待办：
+% 1.定标采用canny算子对标准块分析的方法；2.端面内径后续计算统一以"端面轮廓与壁厚分析"阶段得到的 innerFit.r *2为来源，左右端同时存在时取较小值；
+% 3.端面贴图在建模两端的上下左右镜像方向可能存在错误；4.包络图可以采用膨胀腐蚀法或骨架法去除拼接带来的段落痕迹
+
+%% 初始化
 clear; clc; close all;
 
 cfg = get_cfg();
 
 %% 多图互相关拼接
 [stripImg, stepList] = stitch_strip(cfg);
-show_strip(stripImg, stepList, cfg);
+% show_strip(stripImg, stepList, cfg);
 imwrite(stripImg, cfg.file.strip);
-fprintf('拼接结果已保存为 %s\n', cfg.file.strip);
+% fprintf('拼接结果已保存为 %s\n', cfg.file.strip);
 
 %% 侧视边缘提取
 [roiGray, topMask, botMask, pathTbl] = extract_side_edges(cfg);
 show_side_edges(roiGray, topMask, botMask);
-imwrite(topMask | botMask, cfg.file.side);
+% imwrite(topMask | botMask, cfg.file.side);
 writetable(pathTbl, cfg.file.path);
-fprintf('侧视边缘已保存为 %s\n', cfg.file.side);
-fprintf('侧视路径数据已保存为 %s\n', cfg.file.path);
+% fprintf('侧视边缘已保存为 %s\n', cfg.file.side);
+% fprintf('侧视路径数据已保存为 %s\n', cfg.file.path);
 
 %% 端面轮廓与壁厚分析
-ensure_right_end_image(cfg);
+% ensure_right_end_image(cfg);
 leftEndData = analyze_endface(cfg.end.left, cfg);
 rightEndData = analyze_endface(cfg.end.right, cfg);
-warn_scale_consistency(pathTbl, leftEndData, rightEndData, cfg);
+% warn_scale_consistency(pathTbl, leftEndData, rightEndData, cfg);
 
 %% 玻璃管三维重建
 build_tube_model(cfg, pathTbl, leftEndData, rightEndData);
@@ -91,7 +94,7 @@ end
 
 rotImg = @(img) imrotate(img, cfg.rot.angle, 'bicubic', 'crop');
 
-fprintf('开始拼接，预设旋转角度 %.2f°\n', cfg.rot.angle);
+% fprintf('开始拼接，预设旋转角度 %.2f°\n', cfg.rot.angle);
 
 img0 = imread(fullfile(cfg.dir.img, files(1).name));
 img0 = rotImg(img0);
@@ -262,8 +265,8 @@ img = imread(endCfg.imgAbs);
 img = im2gray(img);
 img = imopen(img, strel('disk', 8));
 
-figure('Name', [endCfg.label, '端面预处理']);
-imshow(img);
+% figure('Name', [endCfg.label, '端面预处理']);
+% imshow(img);
 
 edgeMask = manual_canny(img, cfg.canny.low, cfg.canny.high, cfg.canny.iter);
 figure('Name', [endCfg.label, '端面边缘']);
@@ -285,7 +288,7 @@ innerFit = fit_circle_ls(innerMask);
 outerFit = fit_circle_ls(outerMask);
 
 wall = measure_wall_thickness(innerMask, outerMask, innerFit, outerFit);
-show_endface_result(img, innerFit, outerFit, wall, endCfg.label);
+% show_endface_result(img, innerFit, outerFit, wall, endCfg.label);
 
 endData.label = endCfg.label;
 endData.imgAbs = endCfg.imgAbs;
@@ -296,8 +299,8 @@ endData.outerDiaPx = outerFit.r * 2;
 endData.innerDiaMm = endData.innerDiaPx / cfg.scale.endPxPerMm;
 endData.outerDiaMm = endData.outerDiaPx / cfg.scale.endPxPerMm;
 
-fprintf('%s端面外轮廓已保存为 %s\n', endCfg.label, endCfg.outerCsv);
-fprintf('%s端面内轮廓已保存为 %s\n', endCfg.label, endCfg.innerCsv);
+% fprintf('%s端面外轮廓已保存为 %s\n', endCfg.label, endCfg.outerCsv);
+% fprintf('%s端面内轮廓已保存为 %s\n', endCfg.label, endCfg.innerCsv);
 end
 
 
@@ -890,11 +893,11 @@ if rodDia <= 0
 end
 
 fprintf('================ 计算结果 ================\n');
-fprintf('Left end inner diameter: %.2f mm (%.2f px)\n', leftEndData.innerDiaMm, leftEndData.innerDiaPx);
-fprintf('Right end inner diameter: %.2f mm (%.2f px)\n', rightEndData.innerDiaMm, rightEndData.innerDiaPx);
-fprintf('Tube inner diameter used: %.2f mm\n', tubeID);
-fprintf('Centerline bend span: %.2f mm\n', totalBend);
-fprintf('------------------------------------------\n');
+% fprintf('Left end inner diameter: %.2f mm (%.2f px)\n', leftEndData.innerDiaMm, leftEndData.innerDiaPx);
+% fprintf('Right end inner diameter: %.2f mm (%.2f px)\n', rightEndData.innerDiaMm, rightEndData.innerDiaPx);
+% fprintf('Tube inner diameter used: %.2f mm\n', tubeID);
+% fprintf('Centerline bend span: %.2f mm\n', totalBend);
+% fprintf('------------------------------------------\n');
 fprintf('Maximum straight rod diameter: %.2f mm\n', rodDia);
 fprintf('==========================================\n');
 
@@ -941,8 +944,8 @@ legend(rodArea, 'Rod envelope');
 grid on;
 set(gca, 'YDir', 'reverse');
 
-saveas(gcf, cfg.file.rod);
-fprintf('Rod insertion analysis saved to %s\n', cfg.file.rod);
+% saveas(gcf, cfg.file.rod);
+% fprintf('Rod insertion analysis saved to %s\n', cfg.file.rod);
 end
 
 
