@@ -17,7 +17,7 @@ imwrite(stripImg, cfg.file.strip);
 % fprintf('拼接结果已保存为 %s\n', cfg.file.strip);
 
 %% 侧视边缘提取
-[roiGray, topMask, botMask, pathTbl] = extract_side_edges(cfg);
+[roiGray, topMask, botMask, pathTbl] = extract_side_edges_robust(cfg);
 show_side_edges(roiGray, topMask, botMask);
 % imwrite(topMask | botMask, cfg.file.side);
 writetable(pathTbl, cfg.file.path);
@@ -60,6 +60,51 @@ cfg.file.strip = 'tube_strip.png';
 cfg.file.side = 'side_edges.png';
 cfg.file.path = 'tube_path.csv';
 cfg.file.rod = 'rod_fit.png';
+cfg.file.sideCalib = 'side_edge_calibration.mat';
+
+cfg.sideEdge.forceRecalibrate = true;
+cfg.sideEdge.baselineTop = [];
+cfg.sideEdge.baselineBot = [];
+cfg.sideEdge.bgSigma = 25;
+cfg.sideEdge.edgeSigma = 1.2;
+cfg.sideEdge.searchOutsidePx = 18;
+cfg.sideEdge.searchInsidePx = 36;
+cfg.sideEdge.edgeWindowPx = 4;
+cfg.sideEdge.bandOffsetMinPx = 4;
+cfg.sideEdge.bandOffsetMaxPx = 24;
+cfg.sideEdge.allowBandWithoutValley = false;
+cfg.sideEdge.calibColumnStep = 8;
+cfg.sideEdge.invalidScore = -2.5;
+cfg.sideEdge.candidateNeighborPenalty = 0.20;
+cfg.sideEdge.maxJumpPerCol = 5;
+cfg.sideEdge.jumpPenalty = 0.08;
+cfg.sideEdge.smoothPenalty = 0.18;
+cfg.sideEdge.minCandidateScore = 0.05;
+cfg.sideEdge.minConfidence = 0.35;
+cfg.sideEdge.maxGapToInterp = 80;
+
+cfg.sideEdge.fit.method = 'weighted-pchip-rloess';
+cfg.sideEdge.fit.smoothTop = 31;
+cfg.sideEdge.fit.smoothBot = 45;
+cfg.sideEdge.fit.minSupportCols = 25;
+cfg.sideEdge.fit.rawBlendHighConf = 0.80;
+cfg.sideEdge.fit.maxGapFitOnly = 80;
+cfg.sideEdge.fit.supportConfThr = 0.45;
+
+cfg.sideEdge.marker.darkThr = 0.18;
+cfg.sideEdge.marker.madScale = 3.0;
+cfg.sideEdge.marker.structRadius = 7;
+cfg.sideEdge.marker.minArea = 60;
+cfg.sideEdge.marker.edgeDilatePx = 9;
+cfg.sideEdge.marker.localRejectPx = 6;
+cfg.sideEdge.marker.columnCoverageThr = 0.30;
+cfg.sideEdge.markerPenalty = 1.5;
+
+cfg.sideEdge.top.firstEdgeMinDrop = 0.022;
+cfg.sideEdge.top.valleyDepthThr = 0.035;
+
+cfg.sideEdge.bottom.firstEdgeMinDrop = 0.016;
+cfg.sideEdge.bottom.valleyDepthThr = 0.024;
 
 cfg.end.left.label = '左端';
 cfg.end.left.imgAbs = 'C:\Users\11603\Documents\MATLAB\GlassTube\40.12-30.49.bmp';
