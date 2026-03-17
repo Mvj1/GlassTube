@@ -38,7 +38,7 @@ estimate_rod_fit(pathTbl, leftEndData, rightEndData, cfg);
 
 %% 辅助函数
 function cfg = get_cfg()
-cfg.dir.img = './GlassTubeData/';
+cfg.dir.img = './rare data/30.89-1big30.92';
 cfg.dir.ext = '*.bmp';
 
 cfg.step.nominal = 900;
