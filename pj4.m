@@ -62,7 +62,7 @@ cfg.file.path = 'tube_path.csv';
 cfg.file.rod = 'rod_fit.png';
 cfg.file.sideCalib = 'side_edge_calibration.mat';
 
-cfg.sideEdge.forceRecalibrate = true;
+cfg.sideEdge.forceRecalibrate = false;
 cfg.sideEdge.baselineTop = [];
 cfg.sideEdge.baselineBot = [];
 cfg.sideEdge.bgSigma = 25;

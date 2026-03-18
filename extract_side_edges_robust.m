@@ -236,11 +236,8 @@ botMarker1 = detect_edge_marker_columns(markerMask, botTrace1.path, sideModel.ba
 topFit1 = fit_edge_curve(topTrace1.path, topTrace1.conf, topTrace1.valid, topMarker1, cfg.sideEdge.fit, baseTop, cfg.sideEdge.fit.smoothTop);
 botFit1 = fit_edge_curve(botTrace1.path, botTrace1.conf, botTrace1.valid, botMarker1, cfg.sideEdge.fit, baseBot, cfg.sideEdge.fit.smoothBot);
 
-topPrior2 = build_second_pass_prior(topTrace1.path, topFit1, cfg.sideEdge.fit.weakMixTop, cfg.sideEdge.fit.priorDeltaCapTop, sideModel.baselineTop);
-botPrior2 = build_second_pass_prior(botTrace1.path, botFit1, cfg.sideEdge.fit.weakMixBot, cfg.sideEdge.fit.priorDeltaCapBot, sideModel.baselineBot);
-
-topPass2 = build_edge_candidates(prep, sideModel, 'top', markerMask, topMarker1, topPrior2, cfg);
-botPass2 = build_edge_candidates(prep, sideModel, 'bottom', markerMask, botMarker1, botPrior2, cfg);
+topPass2 = build_edge_candidates(prep, sideModel, 'top', markerMask, topMarker1, topFit1, cfg);
+botPass2 = build_edge_candidates(prep, sideModel, 'bottom', markerMask, botMarker1, botFit1, cfg);
 topTrace2 = trace_edge_path(topPass2, cfg);
 botTrace2 = trace_edge_path(botPass2, cfg);
 
@@ -252,33 +249,27 @@ botMarker = botMarker | detect_edge_marker_columns(markerMask, botTrace2.path, s
 topFit = fit_edge_curve(topTrace2.path, topTrace2.conf, topTrace2.valid, topMarker, cfg.sideEdge.fit, topFit1, cfg.sideEdge.fit.smoothTop);
 botFit = fit_edge_curve(botTrace2.path, botTrace2.conf, botTrace2.valid, botMarker, cfg.sideEdge.fit, botFit1, cfg.sideEdge.fit.smoothBot);
 
-[topFinal, topConf, topValid, topGapFill, topClean, topFitDelta] = fuse_edge_results( ...
-    topTrace2.path, topFit, topTrace2.conf, topTrace2.valid, topMarker, topPrior2, 'top', cfg.sideEdge.fit);
-[botFinal, botConf, botValid, botGapFill, botClean, botFitDelta] = fuse_edge_results( ...
-    botTrace2.path, botFit, botTrace2.conf, botTrace2.valid, botMarker, botPrior2, 'bottom', cfg.sideEdge.fit);
+[topFinal, topConf, topValid, topGapFill] = fuse_edge_results( ...
+    topTrace2.path, topFit, topTrace2.conf, topTrace2.valid, topMarker, cfg.sideEdge.fit);
+[botFinal, botConf, botValid, botGapFill] = fuse_edge_results( ...
+    botTrace2.path, botFit, botTrace2.conf, botTrace2.valid, botMarker, cfg.sideEdge.fit);
 
 sideResult.displayGray = prep.displayGray;
 sideResult.top.rawPath = topTrace2.path(:);
 sideResult.top.fitPath = topFit(:);
-sideResult.top.prior2 = topPrior2(:);
 sideResult.top.finalPath = topFinal(:);
 sideResult.top.conf = topConf(:);
 sideResult.top.valid = topValid(:);
 sideResult.top.marker = topMarker(:);
 sideResult.top.gapFill = topGapFill(:);
-sideResult.top.clean = topClean(:);
-sideResult.top.fitDelta = topFitDelta(:);
 
 sideResult.bot.rawPath = botTrace2.path(:);
 sideResult.bot.fitPath = botFit(:);
-sideResult.bot.prior2 = botPrior2(:);
 sideResult.bot.finalPath = botFinal(:);
 sideResult.bot.conf = botConf(:);
 sideResult.bot.valid = botValid(:);
 sideResult.bot.marker = botMarker(:);
 sideResult.bot.gapFill = botGapFill(:);
-sideResult.bot.clean = botClean(:);
-sideResult.bot.fitDelta = botFitDelta(:);
 end
 
 
@@ -630,57 +621,22 @@ fitPath = smoothdata(fitPath, 'rloess', make_odd_span(max(5, round(smoothSpan * 
 end
 
 
-function prior2 = build_second_pass_prior(rawPath, fitPath, weakMix, deltaCap, fallbackCenter)
-rawPath = rawPath(:).';
-fitPath = fitPath(:).';
-
-prior2 = rawPath;
-validMask = isfinite(rawPath) & isfinite(fitPath);
-delta = fitPath - rawPath;
-delta = max(-deltaCap, min(deltaCap, delta));
-prior2(validMask) = rawPath(validMask) + weakMix * delta(validMask);
-
-missingMask = ~isfinite(prior2);
-prior2(missingMask) = fitPath(missingMask);
-prior2 = fillmissing(prior2, 'linear');
-prior2 = fillmissing(prior2, 'nearest');
-prior2(~isfinite(prior2)) = fallbackCenter;
-end
-
-
-function [fusedPath, fusedConf, fusedValid, gapFill, cleanMask, fitDelta] = fuse_edge_results(rawPath, fitPath, conf, valid, markerCols, prior2, edgeName, fitCfg)
+function [fusedPath, fusedConf, fusedValid, gapFill] = fuse_edge_results(rawPath, fitPath, conf, valid, markerCols, fitCfg)
 rawPath = rawPath(:).';
 fitPath = fitPath(:).';
 conf = conf(:).';
 valid = valid(:).';
 markerCols = markerCols(:).';
-prior2 = prior2(:).';
 
 fusedPath = fitPath;
 fusedConf = conf;
 fusedValid = valid;
 gapFill = false(size(rawPath));
-fitDelta = abs(fitPath - rawPath);
+highConf = valid & ~markerCols & conf >= fitCfg.supportConfThr & isfinite(rawPath);
+fusedPath(highConf) = fitCfg.rawBlendHighConf * rawPath(highConf) + ...
+    (1 - fitCfg.rawBlendHighConf) * fitPath(highConf);
 
-if strcmp(edgeName, 'top')
-    highBlend = fitCfg.blendTopHigh;
-    midBlend = fitCfg.blendTopMid;
-    deltaCap = fitCfg.priorDeltaCapTop;
-else
-    highBlend = fitCfg.blendBotHigh;
-    midBlend = fitCfg.blendBotMid;
-    deltaCap = fitCfg.priorDeltaCapBot;
-end
-
-cleanMask = valid & ~markerCols & ~gapFill & conf >= fitCfg.cleanConfThr & ...
-    isfinite(rawPath) & isfinite(prior2) & abs(prior2 - rawPath) <= deltaCap;
-midMask = valid & ~markerCols & ~cleanMask & conf >= fitCfg.supportConfThr & ...
-    isfinite(rawPath) & isfinite(prior2) & abs(prior2 - rawPath) <= 1.5 * deltaCap;
-
-fusedPath(cleanMask) = highBlend * rawPath(cleanMask) + (1 - highBlend) * fitPath(cleanMask);
-fusedPath(midMask) = midBlend * rawPath(midMask) + (1 - midBlend) * fitPath(midMask);
-
-badCols = ~(cleanMask | midMask);
+badCols = ~highConf;
 runList = find_invalid_runs(badCols);
 
 for idx = 1:size(runList, 1)
@@ -710,8 +666,6 @@ fusedPath = fusedPath(:);
 fusedConf = fusedConf(:);
 fusedValid = fusedValid(:);
 gapFill = gapFill(:);
-cleanMask = cleanMask(:);
-fitDelta = fitDelta(:);
 end
 
 
@@ -757,14 +711,8 @@ pathTbl.TopRaw = topTrace.rawPath(:);
 pathTbl.BotRaw = botTrace.rawPath(:);
 pathTbl.TopFit = topTrace.fitPath(:);
 pathTbl.BotFit = botTrace.fitPath(:);
-pathTbl.TopPrior2 = topTrace.prior2(:);
-pathTbl.BotPrior2 = botTrace.prior2(:);
 pathTbl.TopY = topTrace.finalPath(:);
 pathTbl.BotY = botTrace.finalPath(:);
-pathTbl.TopClean = topTrace.clean(:);
-pathTbl.BotClean = botTrace.clean(:);
-pathTbl.TopFitDelta = topTrace.fitDelta(:);
-pathTbl.BotFitDelta = botTrace.fitDelta(:);
 pathTbl.TopMarker = topTrace.marker(:);
 pathTbl.BotMarker = botTrace.marker(:);
 pathTbl.TopGapFill = topTrace.gapFill(:);
