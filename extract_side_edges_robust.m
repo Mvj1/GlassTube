@@ -1,4 +1,7 @@
 function [roiGray, topMask, botMask, pathTbl] = extract_side_edges_robust(cfg)
+set(groot, 'defaultFigureUnits', 'normalized');
+set(groot, 'defaultFigurePosition', [0, 0, 1, 1]);
+set(groot, 'defaultFigureWindowState', 'maximized');
 if ~exist(cfg.file.strip, 'file')
     error('Missing strip image: %s', cfg.file.strip);
 end
@@ -249,9 +252,9 @@ botMarker = botMarker | detect_edge_marker_columns(markerMask, botTrace2.path, s
 topFit = fit_edge_curve(topTrace2.path, topTrace2.conf, topTrace2.valid, topMarker, cfg.sideEdge.fit, topFit1, cfg.sideEdge.fit.smoothTop);
 botFit = fit_edge_curve(botTrace2.path, botTrace2.conf, botTrace2.valid, botMarker, cfg.sideEdge.fit, botFit1, cfg.sideEdge.fit.smoothBot);
 
-[topFinal, topConf, topValid, topGapFill] = fuse_edge_results( ...
+[topFinal, topConf, topValid, topGapFill, topBlendW, topZone] = fuse_edge_results( ...
     topTrace2.path, topFit, topTrace2.conf, topTrace2.valid, topMarker, cfg.sideEdge.fit);
-[botFinal, botConf, botValid, botGapFill] = fuse_edge_results( ...
+[botFinal, botConf, botValid, botGapFill, botBlendW, botZone] = fuse_edge_results( ...
     botTrace2.path, botFit, botTrace2.conf, botTrace2.valid, botMarker, cfg.sideEdge.fit);
 
 sideResult.displayGray = prep.displayGray;
@@ -262,6 +265,8 @@ sideResult.top.conf = topConf(:);
 sideResult.top.valid = topValid(:);
 sideResult.top.marker = topMarker(:);
 sideResult.top.gapFill = topGapFill(:);
+sideResult.top.blendWeight = topBlendW(:);
+sideResult.top.zone = topZone(:);
 
 sideResult.bot.rawPath = botTrace2.path(:);
 sideResult.bot.fitPath = botFit(:);
@@ -270,6 +275,8 @@ sideResult.bot.conf = botConf(:);
 sideResult.bot.valid = botValid(:);
 sideResult.bot.marker = botMarker(:);
 sideResult.bot.gapFill = botGapFill(:);
+sideResult.bot.blendWeight = botBlendW(:);
+sideResult.bot.zone = botZone(:);
 end
 
 
@@ -621,7 +628,7 @@ fitPath = smoothdata(fitPath, 'rloess', make_odd_span(max(5, round(smoothSpan * 
 end
 
 
-function [fusedPath, fusedConf, fusedValid, gapFill] = fuse_edge_results(rawPath, fitPath, conf, valid, markerCols, fitCfg)
+function [fusedPath, fusedConf, fusedValid, gapFill, blendWeight, zoneLabel] = fuse_edge_results(rawPath, fitPath, conf, valid, markerCols, fitCfg)
 rawPath = rawPath(:).';
 fitPath = fitPath(:).';
 conf = conf(:).';
@@ -632,9 +639,18 @@ fusedPath = fitPath;
 fusedConf = conf;
 fusedValid = valid;
 gapFill = false(size(rawPath));
+blendWeight = ones(size(rawPath));
+zoneLabel = repmat("marker", size(rawPath));
 highConf = valid & ~markerCols & conf >= fitCfg.supportConfThr & isfinite(rawPath);
-fusedPath(highConf) = fitCfg.rawBlendHighConf * rawPath(highConf) + ...
-    (1 - fitCfg.rawBlendHighConf) * fitPath(highConf);
+zoneLabel(highConf) = "normal";
+
+if isfield(fitCfg, 'enableAdaptiveNormalBlend') && fitCfg.enableAdaptiveNormalBlend
+    wFit = adaptive_normal_fit_weight(rawPath(highConf), fitPath(highConf), conf(highConf), fitCfg);
+else
+    wFit = (1 - fitCfg.rawBlendHighConf) * ones(1, nnz(highConf));
+end
+blendWeight(highConf) = wFit;
+fusedPath(highConf) = (1 - wFit) .* rawPath(highConf) + wFit .* fitPath(highConf);
 
 badCols = ~highConf;
 runList = find_invalid_runs(badCols);
@@ -649,12 +665,17 @@ for idx = 1:size(runList, 1)
         gapFill(runIdx) = true;
         fusedValid(runIdx) = true;
         fusedConf(runIdx) = max(0.20, min_neighbor_conf(conf, startIdx, endIdx) * 0.45);
+        zoneLabel(runIdx) = "gap_short";
     else
         gapFill(runIdx) = true;
         fusedValid(runIdx) = false;
         fusedConf(runIdx) = 0.08;
+        zoneLabel(runIdx) = "gap_long";
     end
 end
+
+markerOnly = markerCols & ~highConf;
+zoneLabel(markerOnly) = "marker";
 
 if any(~isfinite(fusedPath))
     fusedPath = fillmissing(fusedPath, 'linear');
@@ -666,6 +687,22 @@ fusedPath = fusedPath(:);
 fusedConf = fusedConf(:);
 fusedValid = fusedValid(:);
 gapFill = gapFill(:);
+blendWeight = blendWeight(:);
+zoneLabel = zoneLabel(:);
+end
+
+
+function wFit = adaptive_normal_fit_weight(rawVals, fitVals, confVals, fitCfg)
+if isempty(rawVals)
+    wFit = zeros(size(rawVals));
+    return;
+end
+
+confDen = max(1 - fitCfg.supportConfThr, eps);
+confScale = clamp_values((1 - confVals) ./ confDen, 0, 1);
+residual = abs(rawVals - fitVals);
+residualScale = clamp_values(fitCfg.normalResidualTolPx ./ max(residual, eps), 0, 1);
+wFit = max(fitCfg.normalFitWeightMin, fitCfg.normalFitWeightCap .* confScale .* residualScale);
 end
 
 
@@ -721,6 +758,10 @@ pathTbl.TopConf = topTrace.conf(:);
 pathTbl.BotConf = botTrace.conf(:);
 pathTbl.TopValid = topTrace.valid(:);
 pathTbl.BotValid = botTrace.valid(:);
+pathTbl.TopBlendW = topTrace.blendWeight(:);
+pathTbl.BotBlendW = botTrace.blendWeight(:);
+pathTbl.TopZone = topTrace.zone(:);
+pathTbl.BotZone = botTrace.zone(:);
 pathTbl.Dia = pathTbl.BotY - pathTbl.TopY;
 pathTbl.Dia(~(pathTbl.TopValid & pathTbl.BotValid)) = nan;
 end
@@ -750,6 +791,11 @@ if vMax - vMin < eps
 else
     out = max(0, min(1, (vec - vMin) / (vMax - vMin)));
 end
+end
+
+
+function out = clamp_values(vals, lo, hi)
+out = min(hi, max(lo, vals));
 end
 
 

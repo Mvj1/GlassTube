@@ -8,6 +8,10 @@
 %% 初始化
 clear; clc; close all;
 
+set(groot, 'defaultFigureUnits', 'normalized');
+set(groot, 'defaultFigurePosition', [0, 0, 1, 1]);
+set(groot, 'defaultFigureWindowState', 'maximized');
+
 cfg = get_cfg();
 
 %% 多图互相关拼接
@@ -38,7 +42,7 @@ estimate_rod_fit(pathTbl, leftEndData, rightEndData, cfg);
 
 %% 辅助函数
 function cfg = get_cfg()
-cfg.dir.img = './rare data/30.89-1big30.92';
+cfg.dir.img = './GlassTubeData';
 cfg.dir.ext = '*.bmp';
 
 cfg.step.nominal = 900;
@@ -62,7 +66,7 @@ cfg.file.path = 'tube_path.csv';
 cfg.file.rod = 'rod_fit.png';
 cfg.file.sideCalib = 'side_edge_calibration.mat';
 
-cfg.sideEdge.forceRecalibrate = false;
+cfg.sideEdge.forceRecalibrate = true;
 cfg.sideEdge.baselineTop = [];
 cfg.sideEdge.baselineBot = [];
 cfg.sideEdge.bgSigma = 25;
@@ -90,6 +94,10 @@ cfg.sideEdge.fit.minSupportCols = 25;
 cfg.sideEdge.fit.rawBlendHighConf = 0.80;
 cfg.sideEdge.fit.maxGapFitOnly = 80;
 cfg.sideEdge.fit.supportConfThr = 0.45;
+cfg.sideEdge.fit.enableAdaptiveNormalBlend = true;
+cfg.sideEdge.fit.normalFitWeightCap = 0.20;
+cfg.sideEdge.fit.normalFitWeightMin = 0.02;
+cfg.sideEdge.fit.normalResidualTolPx = 1.5;
 
 cfg.sideEdge.marker.darkThr = 0.18;
 cfg.sideEdge.marker.madScale = 3.0;

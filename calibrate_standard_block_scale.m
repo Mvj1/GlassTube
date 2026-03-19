@@ -2,6 +2,10 @@ close all;
 clear;
 clc;
 
+set(groot, 'defaultFigureUnits', 'normalized');
+set(groot, 'defaultFigurePosition', [0, 0, 1, 1]);
+set(groot, 'defaultFigureWindowState', 'maximized');
+
 knownLengthMm = 30;
 cannySigma = 1.5;
 cannyTh = [0.15, 0.25];
