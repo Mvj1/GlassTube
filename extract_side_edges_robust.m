@@ -170,12 +170,16 @@ end
 function edgeParams = calibrate_edge_params(seed, edgeParams)
 dropVals = seed.dropVals(seed.valid);
 valleyVals = seed.valleyDepths(seed.valid);
+gradVals = seed.gradVals(seed.valid);
 offsetVals = seed.bandOffsets(seed.valid);
 
 edgeParams.firstEdgeMinDrop = max(edgeParams.firstEdgeMinDrop, 0.75 * prctile(dropVals, 20));
 edgeParams.valleyDepthThr = max(edgeParams.valleyDepthThr, 0.75 * prctile(valleyVals, 20));
 edgeParams.bandOffsetMinPx = max(edgeParams.bandOffsetMinPx, round(prctile(offsetVals, 20)));
 edgeParams.bandOffsetMaxPx = max(edgeParams.bandOffsetMinPx + 2, round(prctile(offsetVals, 80)));
+edgeParams.dropRef = max(prctile(dropVals, 50), edgeParams.firstEdgeMinDrop);
+edgeParams.valleyRef = max(prctile(valleyVals, 50), edgeParams.valleyDepthThr);
+edgeParams.gradRef = max([prctile(gradVals, 50), 0.5 * edgeParams.firstEdgeMinDrop, eps]);
 end
 
 
@@ -197,6 +201,7 @@ edgeRows = nan(numel(sampleCols), 1);
 bandOffsets = nan(numel(sampleCols), 1);
 dropVals = nan(numel(sampleCols), 1);
 valleyDepths = nan(numel(sampleCols), 1);
+gradVals = nan(numel(sampleCols), 1);
 valid = false(numel(sampleCols), 1);
 
 for idx = 1:numel(sampleCols)
@@ -209,6 +214,7 @@ for idx = 1:numel(sampleCols)
     bandOffsets(idx) = cand.bandOffset;
     dropVals(idx) = cand.drop;
     valleyDepths(idx) = cand.valleyDepth;
+    gradVals(idx) = cand.localDelta;
     valid(idx) = true;
 end
 
@@ -216,6 +222,7 @@ seed.edgeRows = edgeRows;
 seed.bandOffsets = bandOffsets;
 seed.dropVals = dropVals;
 seed.valleyDepths = valleyDepths;
+seed.gradVals = gradVals;
 seed.valid = valid;
 end
 
@@ -320,6 +327,7 @@ bandRows = build_runtime_band(edgeName, sideModel, priorCenter, rowN);
 rowCount = numel(bandRows);
 
 score = cfg.sideEdge.invalidScore * ones(rowCount, colN);
+evidence = zeros(rowCount, colN);
 valid = false(rowCount, colN);
 
 for col = 1:colN
@@ -350,19 +358,26 @@ for col = 1:colN
 
     idx = clamp_row_to_band(cand.row, bandRows);
     centerPenalty = 0.03 * abs(cand.row - center);
+    evidenceVal = compute_edge_evidence(cand.drop, cand.valleyDepth, cand.localDelta, edgeParams);
     score(idx, col) = cand.score - centerPenalty;
+    evidence(idx, col) = evidenceVal;
     valid(idx, col) = true;
 
     if idx > 1
         score(idx - 1, col) = max(score(idx - 1, col), score(idx, col) - cfg.sideEdge.candidateNeighborPenalty);
+        evidence(idx - 1, col) = max(evidence(idx - 1, col), max(0, evidenceVal - 0.15));
+        valid(idx - 1, col) = true;
     end
     if idx < rowCount
         score(idx + 1, col) = max(score(idx + 1, col), score(idx, col) - cfg.sideEdge.candidateNeighborPenalty);
+        evidence(idx + 1, col) = max(evidence(idx + 1, col), max(0, evidenceVal - 0.15));
+        valid(idx + 1, col) = true;
     end
 end
 
 candidates.rows = bandRows(:);
 candidates.score = score;
+candidates.evidence = evidence;
 candidates.valid = valid;
 validCenter = priorCenter(isfinite(priorCenter));
 if isempty(validCenter)
@@ -436,6 +451,7 @@ else
     edgeParams.firstEdgeMinDrop = sideCfg.bottom.firstEdgeMinDrop;
     edgeParams.valleyDepthThr = sideCfg.bottom.valleyDepthThr;
 end
+edgeParams = ensure_edge_evidence_refs(edgeParams);
 end
 
 
@@ -448,6 +464,7 @@ if strcmp(edgeName, 'top')
 else
     edgeParams = merge_struct(edgeParams, sideModel.bottom);
 end
+edgeParams = ensure_edge_evidence_refs(edgeParams);
 end
 
 
@@ -462,7 +479,7 @@ end
 
 function cand = find_first_true_edge(profile, markerCol, edgeName, rowBounds, params)
 cand = struct('valid', false, 'row', nan, 'bandOffset', nan, ...
-    'drop', 0, 'valleyDepth', 0, 'score', params.firstEdgeMinDrop * 0.25);
+    'drop', 0, 'valleyDepth', 0, 'localDelta', 0, 'score', params.firstEdgeMinDrop * 0.25);
 
 if strcmp(edgeName, 'top')
     scanRows = rowBounds(1):rowBounds(2);
@@ -486,6 +503,7 @@ for row = scanRows
     cand.bandOffset = bandInfo.offset;
     cand.drop = edgeInfo.drop;
     cand.valleyDepth = bandInfo.valleyDepth;
+    cand.localDelta = edgeInfo.localDelta;
     cand.score = edgeInfo.drop + 0.8 * bandInfo.valleyDepth + 0.2 * bandInfo.strongEdge;
     return;
 end
@@ -493,7 +511,7 @@ end
 
 
 function edgeInfo = compute_edge_windows(profile, markerCol, edgeName, row, windowPx)
-edgeInfo = struct('valid', false, 'drop', 0, 'outsideMean', 0);
+edgeInfo = struct('valid', false, 'drop', 0, 'outsideMean', 0, 'localDelta', 0);
 nRows = numel(profile);
 
 if strcmp(edgeName, 'top')
@@ -524,6 +542,7 @@ end
 edgeInfo.valid = true;
 edgeInfo.drop = drop;
 edgeInfo.outsideMean = outsideMean;
+edgeInfo.localDelta = localDelta;
 end
 
 
@@ -558,6 +577,7 @@ end
 function trace = trace_edge_path(candidates, cfg)
 rows = candidates.rows;
 score = candidates.score;
+evidenceMap = candidates.evidence;
 validMap = candidates.valid;
 [rowN, colN] = size(score);
 
@@ -594,8 +614,8 @@ rawScore(:) = score(linIdx);
 pickedValid(:) = validMap(linIdx);
 
 trace.path = rows(double(rowPath)).';
-trace.conf = normalize_vector(rawScore);
-trace.valid = pickedValid & rawScore >= cfg.sideEdge.minCandidateScore & trace.conf >= cfg.sideEdge.minConfidence;
+trace.conf = evidenceMap(linIdx);
+trace.valid = pickedValid;
 end
 
 
@@ -607,12 +627,12 @@ markerCols = markerCols(:).';
 fallbackPath = fallbackPath(:).';
 xAll = 1:numel(rawPath);
 
-supportMask = valid & ~markerCols & isfinite(rawPath) & conf >= fitCfg.supportConfThr;
+supportMask = valid & ~markerCols & isfinite(rawPath) & conf >= fitCfg.supportEvidenceThr;
 if nnz(supportMask) < fitCfg.minSupportCols
-    supportMask = valid & ~markerCols & isfinite(rawPath) & conf >= 0.15;
+    supportMask = valid & ~markerCols & isfinite(rawPath) & conf >= fitCfg.lowEvidenceThr;
 end
 if nnz(supportMask) < max(8, round(fitCfg.minSupportCols / 2))
-    supportMask = valid & isfinite(rawPath) & conf >= 0.15;
+    supportMask = valid & isfinite(rawPath) & conf >= fitCfg.lowEvidenceThr;
 end
 if nnz(supportMask) < 2
     fitPath = fallbackPath;
@@ -634,26 +654,33 @@ fitPath = fitPath(:).';
 conf = conf(:).';
 valid = valid(:).';
 markerCols = markerCols(:).';
+residual = abs(rawPath - fitPath);
+usableRaw = ~markerCols & isfinite(rawPath);
+rawMask = usableRaw & residual <= fitCfg.rawResidualTolPx;
+blendMask = usableRaw & residual > fitCfg.rawResidualTolPx & residual <= fitCfg.bridgeResidualTolPx;
+gapMask = markerCols | ~usableRaw | residual > fitCfg.bridgeResidualTolPx;
 
 fusedPath = fitPath;
 fusedConf = conf;
 fusedValid = valid;
 gapFill = false(size(rawPath));
 blendWeight = ones(size(rawPath));
-zoneLabel = repmat("marker", size(rawPath));
-highConf = valid & ~markerCols & conf >= fitCfg.supportConfThr & isfinite(rawPath);
-zoneLabel(highConf) = "normal";
+zoneLabel = repmat("gap_long", size(rawPath));
 
-if isfield(fitCfg, 'enableAdaptiveNormalBlend') && fitCfg.enableAdaptiveNormalBlend
-    wFit = adaptive_normal_fit_weight(rawPath(highConf), fitPath(highConf), conf(highConf), fitCfg);
-else
-    wFit = (1 - fitCfg.rawBlendHighConf) * ones(1, nnz(highConf));
+blendWeight(rawMask) = fitCfg.normalFitWeightMin;
+fusedPath(rawMask) = (1 - fitCfg.normalFitWeightMin) .* rawPath(rawMask) + ...
+    fitCfg.normalFitWeightMin .* fitPath(rawMask);
+zoneLabel(rawMask) = "normal";
+
+if any(blendMask)
+    wFit = compute_blend_fit_weight(residual(blendMask), conf(blendMask), fitCfg);
+    blendWeight(blendMask) = wFit;
+    fusedPath(blendMask) = (1 - wFit) .* rawPath(blendMask) + wFit .* fitPath(blendMask);
+    zoneLabel(blendMask) = "blend";
 end
-blendWeight(highConf) = wFit;
-fusedPath(highConf) = (1 - wFit) .* rawPath(highConf) + wFit .* fitPath(highConf);
 
-badCols = ~highConf;
-runList = find_invalid_runs(badCols);
+fusedValid(rawMask | blendMask) = true;
+runList = find_invalid_runs(gapMask);
 
 for idx = 1:size(runList, 1)
     startIdx = runList(idx, 1);
@@ -664,7 +691,7 @@ for idx = 1:size(runList, 1)
     if runLen <= fitCfg.maxGapFitOnly
         gapFill(runIdx) = true;
         fusedValid(runIdx) = true;
-        fusedConf(runIdx) = max(0.20, min_neighbor_conf(conf, startIdx, endIdx) * 0.45);
+        fusedConf(runIdx) = max(fitCfg.lowEvidenceThr, min_neighbor_conf(conf, startIdx, endIdx) * 0.75);
         zoneLabel(runIdx) = "gap_short";
     else
         gapFill(runIdx) = true;
@@ -674,8 +701,8 @@ for idx = 1:size(runList, 1)
     end
 end
 
-markerOnly = markerCols & ~highConf;
-zoneLabel(markerOnly) = "marker";
+zoneLabel(markerCols) = "marker";
+blendWeight(gapMask) = 1;
 
 if any(~isfinite(fusedPath))
     fusedPath = fillmissing(fusedPath, 'linear');
@@ -692,17 +719,36 @@ zoneLabel = zoneLabel(:);
 end
 
 
-function wFit = adaptive_normal_fit_weight(rawVals, fitVals, confVals, fitCfg)
-if isempty(rawVals)
-    wFit = zeros(size(rawVals));
+function evidence = compute_edge_evidence(dropVal, valleyVal, gradVal, edgeParams)
+eDrop = clamp_values(dropVal / max(edgeParams.dropRef, eps), 0, 1);
+eValley = clamp_values(valleyVal / max(edgeParams.valleyRef, eps), 0, 1);
+eGrad = clamp_values(gradVal / max(edgeParams.gradRef, eps), 0, 1);
+evidence = 0.45 * eDrop + 0.35 * eValley + 0.20 * eGrad;
+end
+
+
+function edgeParams = ensure_edge_evidence_refs(edgeParams)
+if ~isfield(edgeParams, 'dropRef') || ~isfinite(edgeParams.dropRef) || edgeParams.dropRef <= 0
+    edgeParams.dropRef = max(edgeParams.firstEdgeMinDrop, eps);
+end
+if ~isfield(edgeParams, 'valleyRef') || ~isfinite(edgeParams.valleyRef) || edgeParams.valleyRef <= 0
+    edgeParams.valleyRef = max(edgeParams.valleyDepthThr, eps);
+end
+if ~isfield(edgeParams, 'gradRef') || ~isfinite(edgeParams.gradRef) || edgeParams.gradRef <= 0
+    edgeParams.gradRef = max(0.5 * edgeParams.firstEdgeMinDrop, eps);
+end
+end
+
+
+function wFit = compute_blend_fit_weight(residualVals, confVals, fitCfg)
+if isempty(residualVals)
+    wFit = zeros(size(residualVals));
     return;
 end
 
-confDen = max(1 - fitCfg.supportConfThr, eps);
-confScale = clamp_values((1 - confVals) ./ confDen, 0, 1);
-residual = abs(rawVals - fitVals);
-residualScale = clamp_values(fitCfg.normalResidualTolPx ./ max(residual, eps), 0, 1);
-wFit = max(fitCfg.normalFitWeightMin, fitCfg.normalFitWeightCap .* confScale .* residualScale);
+residualDen = max(fitCfg.bridgeResidualTolPx - fitCfg.rawResidualTolPx, eps);
+residualScale = clamp_values((residualVals - fitCfg.rawResidualTolPx) ./ residualDen, 0, 1);
+wFit = min(fitCfg.blendFitWeightCap, 0.15 + 0.50 * residualScale .* (1 - confVals));
 end
 
 

@@ -42,7 +42,7 @@ estimate_rod_fit(pathTbl, leftEndData, rightEndData, cfg);
 
 %% 辅助函数
 function cfg = get_cfg()
-cfg.dir.img = './GlassTubeData';
+cfg.dir.img = './rare data/30.89-1big30.92';
 cfg.dir.ext = '*.bmp';
 
 cfg.step.nominal = 900;
@@ -66,7 +66,7 @@ cfg.file.path = 'tube_path.csv';
 cfg.file.rod = 'rod_fit.png';
 cfg.file.sideCalib = 'side_edge_calibration.mat';
 
-cfg.sideEdge.forceRecalibrate = true;
+cfg.sideEdge.forceRecalibrate = false;
 cfg.sideEdge.baselineTop = [];
 cfg.sideEdge.baselineBot = [];
 cfg.sideEdge.bgSigma = 25;
@@ -91,13 +91,13 @@ cfg.sideEdge.fit.method = 'weighted-pchip-rloess';
 cfg.sideEdge.fit.smoothTop = 31;
 cfg.sideEdge.fit.smoothBot = 45;
 cfg.sideEdge.fit.minSupportCols = 25;
-cfg.sideEdge.fit.rawBlendHighConf = 0.80;
 cfg.sideEdge.fit.maxGapFitOnly = 80;
-cfg.sideEdge.fit.supportConfThr = 0.45;
-cfg.sideEdge.fit.enableAdaptiveNormalBlend = true;
-cfg.sideEdge.fit.normalFitWeightCap = 0.20;
+cfg.sideEdge.fit.supportEvidenceThr = 0.35;
+cfg.sideEdge.fit.lowEvidenceThr = 0.20;
 cfg.sideEdge.fit.normalFitWeightMin = 0.02;
-cfg.sideEdge.fit.normalResidualTolPx = 1.5;
+cfg.sideEdge.fit.rawResidualTolPx = 1.5;
+cfg.sideEdge.fit.bridgeResidualTolPx = 4.0;
+cfg.sideEdge.fit.blendFitWeightCap = 0.65;
 
 cfg.sideEdge.marker.darkThr = 0.18;
 cfg.sideEdge.marker.madScale = 3.0;
