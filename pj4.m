@@ -42,7 +42,7 @@ estimate_rod_fit(pathTbl, leftEndData, rightEndData, cfg);
 
 %% 辅助函数
 function cfg = get_cfg()
-cfg.dir.img = './rare data/30.89-1big30.92';
+cfg.dir.img = './rare data/3052-1big2935';
 cfg.dir.ext = '*.bmp';
 
 cfg.step.nominal = 900;
@@ -66,7 +66,7 @@ cfg.file.path = 'tube_path.csv';
 cfg.file.rod = 'rod_fit.png';
 cfg.file.sideCalib = 'side_edge_calibration.mat';
 
-cfg.sideEdge.forceRecalibrate = false;
+cfg.sideEdge.forceRecalibrate = true;
 cfg.sideEdge.baselineTop = [];
 cfg.sideEdge.baselineBot = [];
 cfg.sideEdge.bgSigma = 25;
@@ -108,6 +108,9 @@ cfg.sideEdge.fit.topDiameterWindow = 61;
 cfg.sideEdge.fit.topDiameterShrinkTolPx = 1.5;
 cfg.sideEdge.fit.topDiameterMinNeighbors = 14;
 cfg.sideEdge.fit.topDiameterBlendWeightMin = 0.50;
+cfg.sideEdge.fit.diameterGuardWindow = 61;
+cfg.sideEdge.fit.diameterGuardTolPx = 1.5;
+cfg.sideEdge.fit.suspiciousRunMinLen = 5;
 
 cfg.sideEdge.marker.darkThr = 0.18;
 cfg.sideEdge.marker.madScale = 3.0;
@@ -130,10 +133,25 @@ cfg.sideEdge.top.bandScoreValleyWeight = 0.45;
 cfg.sideEdge.top.bandScoreStrongWeight = 0.12;
 cfg.sideEdge.top.edgeOnlyStrongWeight = 0.10;
 cfg.sideEdge.top.edgeOnlyLocalWeight = 0.20;
+cfg.sideEdge.top.minOuterEvidence = 0.32;
+cfg.sideEdge.top.outerBiasWeight = 0.18;
+cfg.sideEdge.top.maxInwardOverridePx = 8;
+cfg.sideEdge.top.bandEvidenceWeight = 0.28;
+cfg.sideEdge.top.outerEvidenceOverrideMargin = 0.08;
+cfg.sideEdge.top.bandSelectMargin = 0.04;
 
 cfg.sideEdge.bottom.firstEdgeMinDrop = 0.016;
 cfg.sideEdge.bottom.valleyDepthThr = 0.024;
-cfg.sideEdge.bottom.allowBandWithoutValley = false;
+cfg.sideEdge.bottom.allowBandWithoutValley = true;
+cfg.sideEdge.bottom.relaxedOuterDropRatio = 0.75;
+cfg.sideEdge.bottom.relaxedOuterGradRatio = 0.22;
+cfg.sideEdge.bottom.relaxedOuterMaxInwardPx = 10;
+cfg.sideEdge.bottom.minOuterEvidence = 0.30;
+cfg.sideEdge.bottom.outerBiasWeight = 0.26;
+cfg.sideEdge.bottom.maxInwardOverridePx = 8;
+cfg.sideEdge.bottom.bandEvidenceWeight = 0.18;
+cfg.sideEdge.bottom.outerEvidenceOverrideMargin = 0.08;
+cfg.sideEdge.bottom.bandSelectMargin = 0.06;
 
 cfg.end.left.label = '左端';
 cfg.end.left.imgAbs = 'C:\Users\11603\Documents\MATLAB\GlassTube\40.12-30.49.bmp';
