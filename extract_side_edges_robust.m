@@ -255,14 +255,20 @@ topMarker = detect_edge_marker_columns(markerMask, topFit1, sideModel.baselineTo
 botMarker = detect_edge_marker_columns(markerMask, botFit1, sideModel.baselineBot, cfg.sideEdge.marker.localRejectPx);
 topMarker = topMarker | detect_edge_marker_columns(markerMask, topTrace2.path, sideModel.baselineTop, cfg.sideEdge.marker.localRejectPx);
 botMarker = botMarker | detect_edge_marker_columns(markerMask, botTrace2.path, sideModel.baselineBot, cfg.sideEdge.marker.localRejectPx);
+topReject = detect_inward_outlier_columns(topTrace2.path, topTrace2.conf, topTrace2.valid, topMarker, 'top', cfg.sideEdge.fit);
+botReject = detect_inward_outlier_columns(botTrace2.path, botTrace2.conf, botTrace2.valid, botMarker, 'bottom', cfg.sideEdge.fit);
+topBlocked = topMarker | topReject;
+botBlocked = botMarker | botReject;
 
-topFit = fit_edge_curve(topTrace2.path, topTrace2.conf, topTrace2.valid, topMarker, cfg.sideEdge.fit, topFit1, cfg.sideEdge.fit.smoothTop);
-botFit = fit_edge_curve(botTrace2.path, botTrace2.conf, botTrace2.valid, botMarker, cfg.sideEdge.fit, botFit1, cfg.sideEdge.fit.smoothBot);
+topFit = fit_edge_curve(topTrace2.path, topTrace2.conf, topTrace2.valid, topBlocked, cfg.sideEdge.fit, topFit1, cfg.sideEdge.fit.smoothTop);
+botFit = fit_edge_curve(botTrace2.path, botTrace2.conf, botTrace2.valid, botBlocked, cfg.sideEdge.fit, botFit1, cfg.sideEdge.fit.smoothBot);
 
 [topFinal, topConf, topValid, topGapFill, topBlendW, topZone] = fuse_edge_results( ...
-    topTrace2.path, topFit, topTrace2.conf, topTrace2.valid, topMarker, cfg.sideEdge.fit);
+    'top', topTrace2.path, topFit, topTrace2.conf, topTrace2.valid, topBlocked, cfg.sideEdge.fit);
 [botFinal, botConf, botValid, botGapFill, botBlendW, botZone] = fuse_edge_results( ...
-    botTrace2.path, botFit, botTrace2.conf, botTrace2.valid, botMarker, cfg.sideEdge.fit);
+    'bottom', botTrace2.path, botFit, botTrace2.conf, botTrace2.valid, botBlocked, cfg.sideEdge.fit);
+[topFinal, topZone, topBlendW] = enforce_top_diameter_floor( ...
+    topFinal, botFinal, topValid, botValid, topBlocked, botBlocked, topZone, topBlendW, cfg.sideEdge.fit);
 
 sideResult.displayGray = prep.displayGray;
 sideResult.top.rawPath = topTrace2.path(:);
@@ -270,7 +276,7 @@ sideResult.top.fitPath = topFit(:);
 sideResult.top.finalPath = topFinal(:);
 sideResult.top.conf = topConf(:);
 sideResult.top.valid = topValid(:);
-sideResult.top.marker = topMarker(:);
+sideResult.top.marker = topBlocked(:);
 sideResult.top.gapFill = topGapFill(:);
 sideResult.top.blendWeight = topBlendW(:);
 sideResult.top.zone = topZone(:);
@@ -280,7 +286,7 @@ sideResult.bot.fitPath = botFit(:);
 sideResult.bot.finalPath = botFinal(:);
 sideResult.bot.conf = botConf(:);
 sideResult.bot.valid = botValid(:);
-sideResult.bot.marker = botMarker(:);
+sideResult.bot.marker = botBlocked(:);
 sideResult.bot.gapFill = botGapFill(:);
 sideResult.bot.blendWeight = botBlendW(:);
 sideResult.bot.zone = botZone(:);
@@ -445,13 +451,15 @@ if strcmp(edgeName, 'top')
     edgeParams.bandOffsetMaxPx = sideCfg.bandOffsetMaxPx;
     edgeParams.firstEdgeMinDrop = sideCfg.top.firstEdgeMinDrop;
     edgeParams.valleyDepthThr = sideCfg.top.valleyDepthThr;
+    edgeParams = merge_struct(edgeParams, sideCfg.top);
 else
     edgeParams.bandOffsetMinPx = sideCfg.bandOffsetMinPx;
     edgeParams.bandOffsetMaxPx = sideCfg.bandOffsetMaxPx;
     edgeParams.firstEdgeMinDrop = sideCfg.bottom.firstEdgeMinDrop;
     edgeParams.valleyDepthThr = sideCfg.bottom.valleyDepthThr;
+    edgeParams = merge_struct(edgeParams, sideCfg.bottom);
 end
-edgeParams = ensure_edge_evidence_refs(edgeParams);
+edgeParams = ensure_edge_param_defaults(edgeParams);
 end
 
 
@@ -464,7 +472,7 @@ if strcmp(edgeName, 'top')
 else
     edgeParams = merge_struct(edgeParams, sideModel.bottom);
 end
-edgeParams = ensure_edge_evidence_refs(edgeParams);
+edgeParams = ensure_edge_param_defaults(edgeParams);
 end
 
 
@@ -480,39 +488,85 @@ end
 function cand = find_first_true_edge(profile, markerCol, edgeName, rowBounds, params)
 cand = struct('valid', false, 'row', nan, 'bandOffset', nan, ...
     'drop', 0, 'valleyDepth', 0, 'localDelta', 0, 'score', params.firstEdgeMinDrop * 0.25);
+edgeOnlyCand = cand;
 
 if strcmp(edgeName, 'top')
     scanRows = rowBounds(1):rowBounds(2);
 else
     scanRows = rowBounds(2):-1:rowBounds(1);
 end
+scanStart = scanRows(1);
 
 for row = scanRows
-    edgeInfo = compute_edge_windows(profile, markerCol, edgeName, row, params.edgeWindowPx);
-    if ~edgeInfo.valid || edgeInfo.drop < params.firstEdgeMinDrop
+    if strcmp(edgeName, 'top') && ~edgeOnlyCand.valid && ...
+            (row - scanStart) <= params.relaxedOuterMaxInwardPx
+        relaxedInfo = compute_edge_windows(profile, markerCol, edgeName, row, params.edgeWindowPx, ...
+            params.relaxedOuterDropRatio * params.firstEdgeMinDrop, params.relaxedOuterGradRatio);
+        if relaxedInfo.valid
+            edgeOnlyCand.valid = true;
+            edgeOnlyCand.row = row;
+            edgeOnlyCand.bandOffset = nan;
+            edgeOnlyCand.drop = relaxedInfo.drop;
+            edgeOnlyCand.valleyDepth = 0;
+            edgeOnlyCand.localDelta = relaxedInfo.localDelta;
+            edgeOnlyCand.score = relaxedInfo.drop + params.edgeOnlyLocalWeight * relaxedInfo.localDelta;
+        end
+    end
+
+    edgeInfo = compute_edge_windows(profile, markerCol, edgeName, row, params.edgeWindowPx, ...
+        params.firstEdgeMinDrop, 0.4);
+    if ~edgeInfo.valid
         continue;
     end
 
     bandInfo = verify_inner_dark_band(profile, markerCol, edgeName, row, edgeInfo.outsideMean, params);
-    if ~bandInfo.hasBand && ~params.allowBandWithoutValley
-        continue;
+    if bandInfo.hasBand
+        fullScore = edgeInfo.drop + params.bandScoreValleyWeight * bandInfo.valleyDepth + ...
+            params.bandScoreStrongWeight * bandInfo.strongEdge;
+        if edgeOnlyCand.valid && strcmp(edgeName, 'top') && ...
+                ((row - edgeOnlyCand.row) >= params.preferOuterEdgeOnlyGapPx || ...
+                fullScore <= edgeOnlyCand.score + params.preferOuterScoreMargin)
+            cand = edgeOnlyCand;
+            return;
+        end
+        cand.valid = true;
+        cand.row = row;
+        cand.bandOffset = bandInfo.offset;
+        cand.drop = edgeInfo.drop;
+        cand.valleyDepth = bandInfo.valleyDepth;
+        cand.localDelta = edgeInfo.localDelta;
+        cand.score = fullScore;
+        return;
     end
 
-    cand.valid = true;
-    cand.row = row;
-    cand.bandOffset = bandInfo.offset;
-    cand.drop = edgeInfo.drop;
-    cand.valleyDepth = bandInfo.valleyDepth;
-    cand.localDelta = edgeInfo.localDelta;
-    cand.score = edgeInfo.drop + 0.8 * bandInfo.valleyDepth + 0.2 * bandInfo.strongEdge;
-    return;
+    if params.allowBandWithoutValley && ~edgeOnlyCand.valid
+        edgeOnlyCand.valid = true;
+        edgeOnlyCand.row = row;
+        edgeOnlyCand.bandOffset = bandInfo.offset;
+        edgeOnlyCand.drop = edgeInfo.drop;
+        edgeOnlyCand.valleyDepth = bandInfo.valleyDepth;
+        edgeOnlyCand.localDelta = edgeInfo.localDelta;
+        edgeOnlyCand.score = edgeInfo.drop + params.edgeOnlyStrongWeight * bandInfo.strongEdge + ...
+            params.edgeOnlyLocalWeight * edgeInfo.localDelta;
+    end
+end
+
+if edgeOnlyCand.valid
+    cand = edgeOnlyCand;
 end
 end
 
 
-function edgeInfo = compute_edge_windows(profile, markerCol, edgeName, row, windowPx)
+function edgeInfo = compute_edge_windows(profile, markerCol, edgeName, row, windowPx, minDrop, localDeltaRatio)
 edgeInfo = struct('valid', false, 'drop', 0, 'outsideMean', 0, 'localDelta', 0);
 nRows = numel(profile);
+
+if nargin < 6 || ~isfinite(minDrop)
+    minDrop = 0;
+end
+if nargin < 7 || ~isfinite(localDeltaRatio) || localDeltaRatio < 0
+    localDeltaRatio = 0.4;
+end
 
 if strcmp(edgeName, 'top')
     outsideRows = max(1, row - windowPx):row - 1;
@@ -535,7 +589,10 @@ outsideMean = mean(profile(outsideRows));
 insideMean = mean(profile(insideRows));
 drop = outsideMean - insideMean;
 
-if localDelta < 0.4 * drop
+if drop < minDrop
+    return;
+end
+if localDelta < localDeltaRatio * drop
     return;
 end
 
@@ -570,7 +627,7 @@ bandInfo.offset = abs(bandRows(valleyIdx) - row);
 gradRows = max(1, bandRows(1) - 1):min(nRows, bandRows(end) + 1);
 bandInfo.strongEdge = max(abs(diff(profile(gradRows))));
 bandInfo.hasBand = bandInfo.valleyDepth >= params.valleyDepthThr && ...
-    bandInfo.strongEdge >= 0.5 * params.firstEdgeMinDrop;
+    bandInfo.strongEdge >= params.strongEdgeRatio * params.firstEdgeMinDrop;
 end
 
 
@@ -648,7 +705,7 @@ fitPath = smoothdata(fitPath, 'rloess', make_odd_span(max(5, round(smoothSpan * 
 end
 
 
-function [fusedPath, fusedConf, fusedValid, gapFill, blendWeight, zoneLabel] = fuse_edge_results(rawPath, fitPath, conf, valid, markerCols, fitCfg)
+function [fusedPath, fusedConf, fusedValid, gapFill, blendWeight, zoneLabel] = fuse_edge_results(edgeName, rawPath, fitPath, conf, valid, markerCols, fitCfg)
 rawPath = rawPath(:).';
 fitPath = fitPath(:).';
 conf = conf(:).';
@@ -659,6 +716,17 @@ usableRaw = ~markerCols & isfinite(rawPath);
 rawMask = usableRaw & residual <= fitCfg.rawResidualTolPx;
 blendMask = usableRaw & residual > fitCfg.rawResidualTolPx & residual <= fitCfg.bridgeResidualTolPx;
 gapMask = markerCols | ~usableRaw | residual > fitCfg.bridgeResidualTolPx;
+inwardGuardMask = false(size(rawPath));
+
+if strcmp(edgeName, 'top')
+    inwardGuardMask = usableRaw & (fitPath - rawPath) >= fitCfg.inwardGuardTolPx;
+elseif strcmp(edgeName, 'bottom')
+    inwardGuardMask = usableRaw & (rawPath - fitPath) >= fitCfg.inwardGuardTolPx;
+end
+
+rawMask = rawMask | inwardGuardMask;
+blendMask = blendMask & ~inwardGuardMask;
+gapMask = gapMask & ~inwardGuardMask;
 
 fusedPath = fitPath;
 fusedConf = conf;
@@ -727,7 +795,89 @@ evidence = 0.45 * eDrop + 0.35 * eValley + 0.20 * eGrad;
 end
 
 
-function edgeParams = ensure_edge_evidence_refs(edgeParams)
+function rejectCols = detect_inward_outlier_columns(rawPath, conf, valid, blockedCols, edgeName, fitCfg)
+rawPath = rawPath(:).';
+conf = conf(:).';
+valid = valid(:).';
+blockedCols = blockedCols(:).';
+rejectCols = false(size(rawPath));
+halfWin = floor(make_odd_span(fitCfg.inwardOutlierWindow) / 2);
+
+for idx = 1:numel(rawPath)
+    if ~valid(idx) || blockedCols(idx) || ~isfinite(rawPath(idx))
+        continue;
+    end
+    leftIdx = max(1, idx - halfWin);
+    rightIdx = min(numel(rawPath), idx + halfWin);
+    neighMask = valid(leftIdx:rightIdx) & ~blockedCols(leftIdx:rightIdx) & isfinite(rawPath(leftIdx:rightIdx));
+    neighMask(idx - leftIdx + 1) = false;
+    neighVals = rawPath(leftIdx:rightIdx);
+    neighVals = neighVals(neighMask);
+    if numel(neighVals) < fitCfg.inwardOutlierMinNeighbors
+        continue;
+    end
+
+    localMed = median(neighVals);
+    if strcmp(edgeName, 'top')
+        inwardDelta = rawPath(idx) - localMed;
+    else
+        inwardDelta = localMed - rawPath(idx);
+    end
+
+    if inwardDelta >= fitCfg.inwardOutlierTolPx && conf(idx) <= fitCfg.inwardOutlierConfMax
+        rejectCols(idx) = true;
+    end
+end
+end
+
+
+function [topPath, zoneLabel, blendWeight] = enforce_top_diameter_floor( ...
+    topPath, botPath, topValid, botValid, topBlocked, botBlocked, zoneLabel, blendWeight, fitCfg)
+topPath = topPath(:).';
+botPath = botPath(:).';
+topValid = topValid(:).';
+botValid = botValid(:).';
+topBlocked = topBlocked(:).';
+botBlocked = botBlocked(:).';
+zoneLabel = zoneLabel(:).';
+blendWeight = blendWeight(:).';
+
+dia = botPath - topPath;
+halfWin = floor(make_odd_span(fitCfg.topDiameterWindow) / 2);
+
+for idx = 1:numel(topPath)
+    if ~topValid(idx) || ~botValid(idx) || topBlocked(idx) || botBlocked(idx) || ...
+            ~isfinite(topPath(idx)) || ~isfinite(botPath(idx))
+        continue;
+    end
+
+    leftIdx = max(1, idx - halfWin);
+    rightIdx = min(numel(topPath), idx + halfWin);
+    neighMask = topValid(leftIdx:rightIdx) & botValid(leftIdx:rightIdx) & ...
+        ~topBlocked(leftIdx:rightIdx) & ~botBlocked(leftIdx:rightIdx) & ...
+        isfinite(dia(leftIdx:rightIdx));
+    neighMask(idx - leftIdx + 1) = false;
+    neighDia = dia(leftIdx:rightIdx);
+    neighDia = neighDia(neighMask);
+    if numel(neighDia) < fitCfg.topDiameterMinNeighbors
+        continue;
+    end
+
+    diaFloor = median(neighDia) - fitCfg.topDiameterShrinkTolPx;
+    if dia(idx) < diaFloor
+        topPath(idx) = botPath(idx) - diaFloor;
+        blendWeight(idx) = max(blendWeight(idx), fitCfg.topDiameterBlendWeightMin);
+        zoneLabel(idx) = "blend";
+    end
+end
+
+topPath = topPath(:);
+zoneLabel = zoneLabel(:);
+blendWeight = blendWeight(:);
+end
+
+
+function edgeParams = ensure_edge_param_defaults(edgeParams)
 if ~isfield(edgeParams, 'dropRef') || ~isfinite(edgeParams.dropRef) || edgeParams.dropRef <= 0
     edgeParams.dropRef = max(edgeParams.firstEdgeMinDrop, eps);
 end
@@ -736,6 +886,36 @@ if ~isfield(edgeParams, 'valleyRef') || ~isfinite(edgeParams.valleyRef) || edgeP
 end
 if ~isfield(edgeParams, 'gradRef') || ~isfinite(edgeParams.gradRef) || edgeParams.gradRef <= 0
     edgeParams.gradRef = max(0.5 * edgeParams.firstEdgeMinDrop, eps);
+end
+if ~isfield(edgeParams, 'strongEdgeRatio') || ~isfinite(edgeParams.strongEdgeRatio) || edgeParams.strongEdgeRatio <= 0
+    edgeParams.strongEdgeRatio = 0.35;
+end
+if ~isfield(edgeParams, 'preferOuterEdgeOnlyGapPx') || ~isfinite(edgeParams.preferOuterEdgeOnlyGapPx) || edgeParams.preferOuterEdgeOnlyGapPx < 0
+    edgeParams.preferOuterEdgeOnlyGapPx = 4;
+end
+if ~isfield(edgeParams, 'relaxedOuterDropRatio') || ~isfinite(edgeParams.relaxedOuterDropRatio) || edgeParams.relaxedOuterDropRatio <= 0
+    edgeParams.relaxedOuterDropRatio = 0.6;
+end
+if ~isfield(edgeParams, 'relaxedOuterGradRatio') || ~isfinite(edgeParams.relaxedOuterGradRatio) || edgeParams.relaxedOuterGradRatio < 0
+    edgeParams.relaxedOuterGradRatio = 0.18;
+end
+if ~isfield(edgeParams, 'relaxedOuterMaxInwardPx') || ~isfinite(edgeParams.relaxedOuterMaxInwardPx) || edgeParams.relaxedOuterMaxInwardPx < 0
+    edgeParams.relaxedOuterMaxInwardPx = 12;
+end
+if ~isfield(edgeParams, 'preferOuterScoreMargin') || ~isfinite(edgeParams.preferOuterScoreMargin) || edgeParams.preferOuterScoreMargin < 0
+    edgeParams.preferOuterScoreMargin = 0;
+end
+if ~isfield(edgeParams, 'bandScoreValleyWeight') || ~isfinite(edgeParams.bandScoreValleyWeight)
+    edgeParams.bandScoreValleyWeight = 0.8;
+end
+if ~isfield(edgeParams, 'bandScoreStrongWeight') || ~isfinite(edgeParams.bandScoreStrongWeight)
+    edgeParams.bandScoreStrongWeight = 0.2;
+end
+if ~isfield(edgeParams, 'edgeOnlyStrongWeight') || ~isfinite(edgeParams.edgeOnlyStrongWeight)
+    edgeParams.edgeOnlyStrongWeight = 0.15;
+end
+if ~isfield(edgeParams, 'edgeOnlyLocalWeight') || ~isfinite(edgeParams.edgeOnlyLocalWeight)
+    edgeParams.edgeOnlyLocalWeight = 0;
 end
 end
 

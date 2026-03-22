@@ -77,6 +77,7 @@ cfg.sideEdge.edgeWindowPx = 4;
 cfg.sideEdge.bandOffsetMinPx = 4;
 cfg.sideEdge.bandOffsetMaxPx = 24;
 cfg.sideEdge.allowBandWithoutValley = false;
+cfg.sideEdge.strongEdgeRatio = 0.35;
 cfg.sideEdge.calibColumnStep = 8;
 cfg.sideEdge.invalidScore = -2.5;
 cfg.sideEdge.candidateNeighborPenalty = 0.20;
@@ -98,6 +99,15 @@ cfg.sideEdge.fit.normalFitWeightMin = 0.02;
 cfg.sideEdge.fit.rawResidualTolPx = 1.5;
 cfg.sideEdge.fit.bridgeResidualTolPx = 4.0;
 cfg.sideEdge.fit.blendFitWeightCap = 0.65;
+cfg.sideEdge.fit.inwardGuardTolPx = 2.0;
+cfg.sideEdge.fit.inwardOutlierWindow = 21;
+cfg.sideEdge.fit.inwardOutlierTolPx = 4.0;
+cfg.sideEdge.fit.inwardOutlierConfMax = 0.90;
+cfg.sideEdge.fit.inwardOutlierMinNeighbors = 8;
+cfg.sideEdge.fit.topDiameterWindow = 61;
+cfg.sideEdge.fit.topDiameterShrinkTolPx = 1.5;
+cfg.sideEdge.fit.topDiameterMinNeighbors = 14;
+cfg.sideEdge.fit.topDiameterBlendWeightMin = 0.50;
 
 cfg.sideEdge.marker.darkThr = 0.18;
 cfg.sideEdge.marker.madScale = 3.0;
@@ -110,9 +120,20 @@ cfg.sideEdge.markerPenalty = 1.5;
 
 cfg.sideEdge.top.firstEdgeMinDrop = 0.022;
 cfg.sideEdge.top.valleyDepthThr = 0.035;
+cfg.sideEdge.top.allowBandWithoutValley = true;
+cfg.sideEdge.top.preferOuterEdgeOnlyGapPx = 2;
+cfg.sideEdge.top.preferOuterScoreMargin = 0.020;
+cfg.sideEdge.top.relaxedOuterDropRatio = 0.60;
+cfg.sideEdge.top.relaxedOuterGradRatio = 0.18;
+cfg.sideEdge.top.relaxedOuterMaxInwardPx = 12;
+cfg.sideEdge.top.bandScoreValleyWeight = 0.45;
+cfg.sideEdge.top.bandScoreStrongWeight = 0.12;
+cfg.sideEdge.top.edgeOnlyStrongWeight = 0.10;
+cfg.sideEdge.top.edgeOnlyLocalWeight = 0.20;
 
 cfg.sideEdge.bottom.firstEdgeMinDrop = 0.016;
 cfg.sideEdge.bottom.valleyDepthThr = 0.024;
+cfg.sideEdge.bottom.allowBandWithoutValley = false;
 
 cfg.end.left.label = '左端';
 cfg.end.left.imgAbs = 'C:\Users\11603\Documents\MATLAB\GlassTube\40.12-30.49.bmp';
