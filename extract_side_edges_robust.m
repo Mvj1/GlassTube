@@ -21,11 +21,12 @@ function [roiGray, sideModel] = prepare_side_roi_and_model(img, cfg)
 roiRect = [];
 sideModel = struct();
 configFingerprint = side_config_fingerprint(cfg.sideEdge);
+sourceSignature = side_calibration_source_signature(img, cfg);
 needsCalibrate = cfg.sideEdge.forceRecalibrate || ~exist(cfg.file.sideCalib, 'file');
 
 if ~needsCalibrate
     loaded = load(cfg.file.sideCalib, 'sideModel');
-    if isfield(loaded, 'sideModel') && is_compatible_side_model(loaded.sideModel, configFingerprint)
+    if isfield(loaded, 'sideModel') && is_compatible_side_model(loaded.sideModel, configFingerprint, sourceSignature)
         sideModel = loaded.sideModel;
         roiRect = sideModel.roiRect;
     else
@@ -45,6 +46,7 @@ if needsCalibrate
     sideModel.roiRect = roiRect;
     sideModel.schemaVersion = side_model_version();
     sideModel.configFingerprint = configFingerprint;
+    sideModel.sourceSignature = sourceSignature;
     save(cfg.file.sideCalib, 'sideModel');
 else
     roiImg = crop_side_roi(img, roiRect);
@@ -57,10 +59,10 @@ roiGray = ensure_gray_double(roiImg);
 end
 
 
-function tf = is_compatible_side_model(sideModel, configFingerprint)
+function tf = is_compatible_side_model(sideModel, configFingerprint, sourceSignature)
 requiredFields = {'schemaVersion', 'roiRect', 'baselineTop', 'baselineBot', ...
     'searchOutsidePx', 'searchInsidePx', 'edgeWindowPx', 'allowBandWithoutValley', ...
-    'top', 'bottom', 'configFingerprint'};
+    'top', 'bottom', 'configFingerprint', 'sourceSignature'};
 tf = isstruct(sideModel) && isfield(sideModel, 'schemaVersion') && ...
     sideModel.schemaVersion == side_model_version();
 
@@ -89,11 +91,12 @@ for idx = 1:numel(topFields)
 end
 
 tf = tf && strcmp(sideModel.configFingerprint, configFingerprint);
+tf = tf && strcmp(sideModel.sourceSignature, sourceSignature);
 end
 
 
 function version = side_model_version()
-version = 4;
+version = 5;
 end
 
 
@@ -369,6 +372,7 @@ for col = 1:colN
     if ~isfinite(center)
         center = default_row_for_edge(edgeName, sideModel);
     end
+    center = max(1, min(rowN, center));
     fallbackIdx = clamp_row_to_band(center, bandRows);
 
     searchBounds = local_search_bounds(edgeName, center, sideModel, rowN);
@@ -445,12 +449,17 @@ end
 
 
 function bounds = local_search_bounds(edgeName, center, sideModel, rowN)
+center = max(1, min(rowN, center));
 if strcmp(edgeName, 'top')
     bounds = [max(1, round(center) - sideModel.searchOutsidePx), ...
         min(rowN, round(center) + sideModel.searchInsidePx)];
 else
     bounds = [max(1, round(center) - sideModel.searchInsidePx), ...
         min(rowN, round(center) + sideModel.searchOutsidePx)];
+end
+if bounds(1) > bounds(2)
+    centerRow = max(1, min(rowN, round(center)));
+    bounds = [centerRow, centerRow];
 end
 end
 
@@ -757,6 +766,12 @@ fitPath = interp1(xSupport, ySupport, xAll, 'pchip', 'extrap');
 fitPath = smoothdata(fitPath, 'rloess', make_odd_span(smoothSpan));
 fitPath(supportMask) = 0.65 * ySupport + 0.35 * fitPath(supportMask);
 fitPath = smoothdata(fitPath, 'rloess', make_odd_span(max(5, round(smoothSpan * 0.7))));
+fitRef = [ySupport(:); fallbackPath(isfinite(fallbackPath)).'];
+if ~isempty(fitRef)
+    fitMin = min(fitRef) - 2 * fitCfg.bridgeResidualTolPx;
+    fitMax = max(fitRef) + 2 * fitCfg.bridgeResidualTolPx;
+    fitPath = max(fitMin, min(fitMax, fitPath));
+end
 end
 
 
@@ -1303,6 +1318,15 @@ jsonText = jsonencode(fpStruct);
 md = java.security.MessageDigest.getInstance('MD5');
 md.update(uint8(jsonText));
 fp = lower(reshape(dec2hex(typecast(md.digest(), 'uint8'), 2).', 1, []));
+end
+
+
+function signature = side_calibration_source_signature(img, cfg)
+imgSize = size(img);
+if numel(imgSize) < 3
+    imgSize(3) = 1;
+end
+signature = sprintf('%s|%d|%d|%d', cfg.dir.img, imgSize(1), imgSize(2), imgSize(3));
 end
 
 
