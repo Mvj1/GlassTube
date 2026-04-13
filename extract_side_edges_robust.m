@@ -298,6 +298,8 @@ botFit = fit_edge_curve(botTrace2.path, botTrace2.conf, botTrace2.valid, botBloc
 [topFinal, botFinal, topZone, botZone, topBlendW, botBlendW] = enforce_diameter_guards( ...
     topFinal, botFinal, topValid, botValid, topBlocked, botBlocked, ...
     topZone, botZone, topBlendW, botBlendW, fitCfg);
+[topFinal, topZone] = smooth_pixel_kinks(topFinal, topZone, topConf, 'top', fitCfg);
+[botFinal, botZone] = smooth_pixel_kinks(botFinal, botZone, botConf, 'bottom', fitCfg);
 
 sideResult.displayGray = prep.displayGray;
 sideResult.top.rawPath = topTrace2.path(:);
@@ -319,6 +321,13 @@ sideResult.bot.marker = botBlocked(:);
 sideResult.bot.gapFill = botGapFill(:);
 sideResult.bot.blendWeight = botBlendW(:);
 sideResult.bot.zone = botZone(:);
+
+if should_dump_candidate_debug(cfg)
+    write_candidate_debug_table(topPass1, 'top', 1, cfg);
+    write_candidate_debug_table(topPass2, 'top', 2, cfg);
+    write_candidate_debug_table(botPass1, 'bottom', 1, cfg);
+    write_candidate_debug_table(botPass2, 'bottom', 2, cfg);
+end
 end
 
 
@@ -366,6 +375,7 @@ score = cfg.sideEdge.invalidScore * ones(rowCount, colN);
 evidence = zeros(rowCount, colN);
 valid = false(rowCount, colN);
 suspectCols = false(1, colN);
+diag = init_candidate_diag(colN);
 
 for col = 1:colN
     center = priorCenter(min(col, numel(priorCenter)));
@@ -376,8 +386,13 @@ for col = 1:colN
     fallbackIdx = clamp_row_to_band(center, bandRows);
 
     searchBounds = local_search_bounds(edgeName, center, sideModel, rowN);
+    diag.center(col) = center;
+    diag.searchMin(col) = searchBounds(1);
+    diag.searchMax(col) = searchBounds(2);
+    diag.blocked(col) = blockedCols(min(col, numel(blockedCols)));
     if mean(markerMask(searchBounds(1):searchBounds(2), col)) > cfg.sideEdge.marker.columnCoverageThr
         score(fallbackIdx, col) = cfg.sideEdge.invalidScore - cfg.sideEdge.markerPenalty;
+        diag.columnMasked(col) = true;
         continue;
     end
 
@@ -386,15 +401,52 @@ for col = 1:colN
         continue;
     end
 
-    cand = find_first_true_edge(prep.smoothGray(:, col), markerMask(:, col), edgeName, searchBounds, edgeParams);
+    [cand, candSet] = find_first_true_edge(prep.smoothGray(:, col), markerMask(:, col), edgeName, searchBounds, edgeParams);
+    cand = select_runtime_candidate(cand, candSet, center, cfg.sideEdge, edgeParams);
+    retryExpanded = false;
+    boundaryLocked = is_boundary_locked_candidate(cand, searchBounds, edgeName, center, edgeParams);
+    if ~cand.valid || boundaryLocked
+        expandedBounds = expanded_search_bounds(edgeName, center, sideModel, rowN);
+        if any(expandedBounds ~= searchBounds)
+            retryParams = edgeParams;
+            if strcmp(edgeName, 'top')
+                retryParams = relaxed_retry_edge_params(edgeParams);
+            end
+            [candEx, candSetEx] = find_first_true_edge(prep.smoothGray(:, col), markerMask(:, col), edgeName, expandedBounds, retryParams);
+            candEx = select_runtime_candidate(candEx, candSetEx, center, cfg.sideEdge, edgeParams);
+            if candEx.valid
+                cand = candEx;
+                candSet = candSetEx;
+                searchBounds = expandedBounds;
+                diag.searchMin(col) = expandedBounds(1);
+                diag.searchMax(col) = expandedBounds(2);
+                diag.expandedRetry(col) = true;
+                retryExpanded = true;
+                boundaryLocked = is_boundary_locked_candidate(cand, searchBounds, edgeName, center, edgeParams);
+            end
+        end
+    end
+    if boundaryLocked
+        cand = make_empty_edge_candidate();
+        candSet = struct('bestOuter', make_empty_edge_candidate(), 'bestBand', make_empty_edge_candidate(), ...
+            'inwardGap', inf, 'outerWeak', false, 'bandOverrides', false);
+        diag.boundaryRejected(col) = true;
+    end
+    diag = record_candidate_diag(diag, col, candSet, cand);
 
     if ~cand.valid
         score(fallbackIdx, col) = cfg.sideEdge.invalidScore;
+        [score, evidence, valid, anchorInfo] = stamp_center_anchor(score, evidence, valid, bandRows, col, center, cand, candSet, edgeName, cfg.sideEdge, edgeParams);
+        diag.anchorRow(col) = anchorInfo.row;
+        diag.anchorScore(col) = anchorInfo.score;
+        diag.anchorEvidence(col) = anchorInfo.evidence;
+        diag.anchorSource(col) = string(anchorInfo.source);
         continue;
     end
 
     idx = clamp_row_to_band(cand.row, bandRows);
-    centerPenalty = 0.03 * abs(cand.row - center);
+    bridgeFar = should_bridge_far_candidate(edgeName, cand, center, retryExpanded, cfg.sideEdge, edgeParams);
+    centerPenalty = runtime_center_penalty(edgeName, cand.row, center, retryExpanded, bridgeFar, edgeParams);
     suspectPenalty = cfg.sideEdge.markerPenalty * double(cand.suspect);
     evidenceVal = cand.evidence;
     score(idx, col) = cand.score - centerPenalty - suspectPenalty;
@@ -412,6 +464,15 @@ for col = 1:colN
         evidence(idx + 1, col) = max(evidence(idx + 1, col), max(0, evidenceVal - 0.15));
         valid(idx + 1, col) = true;
     end
+    if bridgeFar
+        [score, evidence, valid] = stamp_transition_bridge(score, evidence, valid, bandRows, col, center, cand, edgeName, score(idx, col), evidenceVal, cfg.sideEdge);
+    end
+
+    [score, evidence, valid, anchorInfo] = stamp_center_anchor(score, evidence, valid, bandRows, col, center, cand, candSet, edgeName, cfg.sideEdge, edgeParams);
+    diag.anchorRow(col) = anchorInfo.row;
+    diag.anchorScore(col) = anchorInfo.score;
+    diag.anchorEvidence(col) = anchorInfo.evidence;
+    diag.anchorSource(col) = string(anchorInfo.source);
 end
 
 candidates.rows = bandRows(:);
@@ -419,6 +480,7 @@ candidates.score = score;
 candidates.evidence = evidence;
 candidates.valid = valid;
 candidates.suspectCols = suspectCols(:);
+candidates.diag = diag;
 validCenter = priorCenter(isfinite(priorCenter));
 if isempty(validCenter)
     candidates.baseline = default_row_for_edge(edgeName, sideModel);
@@ -524,13 +586,12 @@ end
 end
 
 
-function cand = find_first_true_edge(profile, markerCol, edgeName, rowBounds, params)
-cand = struct('valid', false, 'row', nan, 'bandOffset', nan, ...
-    'drop', 0, 'valleyDepth', 0, 'localDelta', 0, 'strongEdge', 0, ...
-    'outerEvidence', 0, 'bandEvidence', 0, 'evidence', 0, 'score', 0, ...
-    'hasBand', false, 'suspect', false, 'inwardOffset', inf);
+function [cand, candSet] = find_first_true_edge(profile, markerCol, edgeName, rowBounds, params)
+cand = make_empty_edge_candidate();
 bestOuter = cand;
 bestBand = cand;
+candSet = struct('bestOuter', bestOuter, 'bestBand', bestBand, ...
+    'inwardGap', inf, 'outerWeak', false, 'bandOverrides', false);
 
 if strcmp(edgeName, 'top')
     scanRows = rowBounds(1):rowBounds(2);
@@ -592,11 +653,13 @@ end
 
 if bestOuter.valid && ~bestBand.valid
     cand = bestOuter;
+    candSet.bestOuter = bestOuter;
     return;
 end
 if bestBand.valid && ~bestOuter.valid
     cand = bestBand;
     cand.suspect = true;
+    candSet.bestBand = cand;
     return;
 end
 if ~bestOuter.valid && ~bestBand.valid
@@ -606,6 +669,12 @@ end
 inwardGap = inward_distance_between_rows(bestOuter.row, bestBand.row, edgeName);
 outerWeak = bestOuter.outerEvidence <= (params.minOuterEvidence + params.outerEvidenceOverrideMargin);
 bandOverrides = bestBand.score >= (bestOuter.score + params.bandSelectMargin);
+bestBand.suspect = inwardGap > max(2, round(0.6 * params.maxInwardOverridePx));
+candSet.bestOuter = bestOuter;
+candSet.bestBand = bestBand;
+candSet.inwardGap = inwardGap;
+candSet.outerWeak = outerWeak;
+candSet.bandOverrides = bandOverrides;
 
 if inwardGap > params.maxInwardOverridePx && ~outerWeak
     cand = bestOuter;
@@ -614,10 +683,411 @@ end
 
 if bandOverrides && (inwardGap <= params.maxInwardOverridePx || outerWeak)
     cand = bestBand;
-    cand.suspect = inwardGap > max(2, round(0.6 * params.maxInwardOverridePx));
 else
     cand = bestOuter;
 end
+end
+
+
+function bounds = expanded_search_bounds(edgeName, center, sideModel, rowN)
+center = max(1, min(rowN, center));
+extraInward = max(round(2.2 * sideModel.searchInsidePx), sideModel.searchInsidePx + 42);
+extraOutside = max(sideModel.searchOutsidePx, round(1.3 * sideModel.searchOutsidePx));
+if strcmp(edgeName, 'top')
+    bounds = [max(1, round(center) - extraOutside), ...
+        min(rowN, round(center) + extraInward)];
+else
+    bounds = [max(1, round(center) - extraInward), ...
+        min(rowN, round(center) + extraOutside)];
+end
+if bounds(1) > bounds(2)
+    centerRow = max(1, min(rowN, round(center)));
+    bounds = [centerRow, centerRow];
+end
+end
+
+
+function edgeParams = relaxed_retry_edge_params(edgeParams)
+edgeParams.firstEdgeMinDrop = 0.72 * edgeParams.firstEdgeMinDrop;
+edgeParams.minOuterEvidence = max(0.20, 0.78 * edgeParams.minOuterEvidence);
+edgeParams.baseLocalDeltaRatio = max(0.14, 0.72 * edgeParams.baseLocalDeltaRatio);
+edgeParams.relaxedOuterDropRatio = max(0.45, 0.85 * edgeParams.relaxedOuterDropRatio);
+edgeParams.relaxedOuterGradRatio = max(0.10, 0.85 * edgeParams.relaxedOuterGradRatio);
+end
+
+
+function cand = select_runtime_candidate(cand, candSet, center, sideCfg, edgeParams)
+choices = [candSet.bestOuter, candSet.bestBand];
+bestIdx = 0;
+bestScore = -inf;
+scoreList = -inf(1, numel(choices));
+distList = inf(1, numel(choices));
+
+for idx = 1:numel(choices)
+    candNow = choices(idx);
+    if ~candNow.valid || ~isfinite(candNow.row)
+        continue;
+    end
+
+    centerDist = abs(candNow.row - center);
+    centerPenalty = 0.03 * centerDist;
+    suspectPenalty = sideCfg.markerPenalty * double(candNow.suspect);
+    scoreNow = candNow.score - centerPenalty - suspectPenalty;
+    scoreList(idx) = scoreNow;
+    distList(idx) = centerDist;
+    if bestIdx == 0 || scoreNow > bestScore + 1e-6
+        bestIdx = idx;
+        bestScore = scoreNow;
+        cand = candNow;
+    elseif abs(scoreNow - bestScore) <= 1e-6 && candNow.inwardOffset < cand.inwardOffset
+        bestIdx = idx;
+        bestScore = scoreNow;
+        cand = candNow;
+    end
+end
+
+validIdx = find(isfinite(distList));
+if numel(validIdx) < 2
+    return;
+end
+
+[~, closePos] = min(distList(validIdx));
+closeIdx = validIdx(closePos);
+farIdx = validIdx(validIdx ~= closeIdx);
+if isempty(farIdx)
+    return;
+end
+farIdx = farIdx(1);
+
+closeCand = choices(closeIdx);
+farCand = choices(farIdx);
+closeDist = distList(closeIdx);
+farDist = distList(farIdx);
+distGap = farDist - closeDist;
+
+if closeIdx == 1 && closeCand.valid && isfinite(closeCand.row) && ...
+        closeDist <= max(2, edgeParams.preferOuterEdgeOnlyGapPx - 1) && ...
+        closeCand.evidence >= max(0.92, sideCfg.minConfidence + 0.45) && ...
+        distGap >= max(2, edgeParams.preferOuterEdgeOnlyGapPx - 1)
+    scoreGap = scoreList(farIdx) - scoreList(closeIdx);
+    outerHoldMargin = edgeParams.preferOuterScoreMargin + 0.08 + 0.02 * distGap;
+    if scoreGap <= outerHoldMargin
+        cand = closeCand;
+        return;
+    end
+end
+
+if distGap < edgeParams.preferOuterEdgeOnlyGapPx
+    return;
+end
+
+farTooFar = farDist >= max(edgeParams.maxInwardOverridePx, edgeParams.preferOuterEdgeOnlyGapPx + 1);
+if ~farTooFar
+    return;
+end
+
+scoreGap = scoreList(farIdx) - scoreList(closeIdx);
+escapeMargin = edgeParams.preferOuterScoreMargin + 0.02 * distGap + 0.10 * double(farCand.suspect);
+if scoreGap <= escapeMargin
+    cand = closeCand;
+end
+end
+
+
+function penalty = runtime_center_penalty(edgeName, rowVal, center, retryExpanded, bridgeFar, edgeParams)
+gap = abs(rowVal - center);
+if retryExpanded && strcmp(edgeName, 'top')
+    penalty = 0.03 * min(gap, max(edgeParams.maxInwardOverridePx + 4, 12));
+elseif bridgeFar && strcmp(edgeName, 'bottom')
+    penalty = 0.03 * min(gap, max(edgeParams.maxInwardOverridePx + 4, 12));
+else
+    penalty = 0.03 * gap;
+end
+end
+
+
+function tf = should_bridge_far_candidate(edgeName, cand, center, retryExpanded, sideCfg, edgeParams)
+tf = false;
+if ~cand.valid || ~isfinite(cand.row) || ~isfinite(center)
+    return;
+end
+
+gap = abs(cand.row - center);
+gapThr = max(sideCfg.maxJumpPerCol + 3, edgeParams.maxInwardOverridePx + 2);
+if gap < gapThr
+    return;
+end
+
+if retryExpanded && strcmp(edgeName, 'top')
+    tf = true;
+    return;
+end
+
+if strcmp(edgeName, 'bottom') && ~retryExpanded && cand.evidence >= max(sideCfg.minConfidence, 0.45)
+    tf = true;
+end
+end
+
+
+function [score, evidence, valid, anchorInfo] = stamp_center_anchor(score, evidence, valid, bandRows, col, center, cand, candSet, edgeName, sideCfg, edgeParams)
+anchorInfo = struct('row', nan, 'score', nan, 'evidence', nan, 'source', "none");
+if ~isfinite(center)
+    return;
+end
+
+if ~cand.valid || ~isfinite(cand.row)
+    anchorRow = center;
+    anchorEvidence = max(0.18, 0.55 * sideCfg.minConfidence);
+    anchorScore = max(0.16, sideCfg.minCandidateScore + 0.08);
+    anchorIdx = clamp_row_to_band(anchorRow, bandRows);
+    if anchorScore > score(anchorIdx, col) + 1e-6
+        score(anchorIdx, col) = anchorScore;
+        evidence(anchorIdx, col) = max(evidence(anchorIdx, col), anchorEvidence);
+        valid(anchorIdx, col) = true;
+        anchorInfo.row = anchorRow;
+        anchorInfo.score = anchorScore;
+        anchorInfo.evidence = anchorEvidence;
+        anchorInfo.source = "center_gap";
+    end
+    return;
+end
+
+centerGap = abs(cand.row - center);
+anchorGapThr = max(edgeParams.preferOuterEdgeOnlyGapPx + 1, edgeParams.maxInwardOverridePx);
+if centerGap < anchorGapThr
+    return;
+end
+
+anchorRow = nan;
+anchorEvidence = 0;
+anchorScore = -inf;
+choices = [candSet.bestOuter, candSet.bestBand];
+for idx = 1:numel(choices)
+    candNow = choices(idx);
+    if ~candNow.valid || ~isfinite(candNow.row)
+        continue;
+    end
+    distNow = abs(candNow.row - center);
+    if distNow > 2
+        continue;
+    end
+    scoreNow = candNow.score - 0.03 * distNow - sideCfg.markerPenalty * double(candNow.suspect);
+    if scoreNow > anchorScore
+        anchorRow = candNow.row;
+        anchorEvidence = candNow.evidence;
+        anchorScore = scoreNow;
+        anchorInfo.source = string(candidate_source_label(candNow, candSet));
+    end
+end
+
+if ~isfinite(anchorRow)
+    anchorRow = center;
+    anchorEvidence = max(0.18, 0.65 * cand.evidence);
+    anchorScore = cand.score - 0.20 - 0.02 * centerGap;
+    if strcmp(edgeName, 'bottom') && cand.evidence >= max(0.80, sideCfg.minConfidence + 0.35) && centerGap >= anchorGapThr
+        anchorScore = min(anchorScore, cand.score - 0.55 - 0.03 * centerGap);
+    end
+    anchorInfo.source = "center";
+end
+
+anchorIdx = clamp_row_to_band(anchorRow, bandRows);
+if anchorScore <= score(anchorIdx, col) + 1e-6
+    return;
+end
+
+score(anchorIdx, col) = anchorScore;
+evidence(anchorIdx, col) = max(evidence(anchorIdx, col), anchorEvidence);
+valid(anchorIdx, col) = true;
+anchorInfo.row = anchorRow;
+anchorInfo.score = anchorScore;
+anchorInfo.evidence = anchorEvidence;
+if anchorInfo.source == "none"
+    anchorInfo.source = "center";
+end
+end
+
+
+function [score, evidence, valid] = stamp_transition_bridge(score, evidence, valid, bandRows, col, center, cand, edgeName, candScore, candEvidence, sideCfg)
+if ~cand.valid || ~isfinite(cand.row) || ~isfinite(center)
+    return;
+end
+
+rowStart = round(center);
+rowStop = round(cand.row);
+if abs(rowStop - rowStart) <= max(2, sideCfg.maxJumpPerCol)
+    return;
+end
+
+stepDir = sign(rowStop - rowStart);
+if strcmp(edgeName, 'bottom')
+    bridgeRows = rowStart + stepDir : stepDir : rowStop - stepDir;
+else
+    bridgeRows = rowStart + stepDir * sideCfg.maxJumpPerCol : stepDir * sideCfg.maxJumpPerCol : rowStop - stepDir;
+end
+gapTotal = max(abs(rowStop - rowStart), 1);
+for rowVal = bridgeRows
+    idx = clamp_row_to_band(rowVal, bandRows);
+    distToTarget = abs(rowStop - rowVal);
+    if strcmp(edgeName, 'bottom')
+        distFromCenter = abs(rowVal - rowStart);
+        bridgeScore = candScore - 0.02 - 0.008 * distToTarget - 0.002 * distFromCenter;
+        evidenceScale = 1 - 0.20 * (distToTarget / gapTotal);
+        bridgeEvidence = max(0.22, evidenceScale * candEvidence);
+    else
+        bridgeScore = candScore - 0.03 - 0.012 * distToTarget;
+        bridgeEvidence = max(0.20, 0.72 * candEvidence);
+    end
+    if bridgeScore <= score(idx, col) + 1e-6
+        continue;
+    end
+    score(idx, col) = bridgeScore;
+    evidence(idx, col) = max(evidence(idx, col), bridgeEvidence);
+    valid(idx, col) = true;
+end
+end
+
+
+function diag = init_candidate_diag(colN)
+diag = struct();
+diag.center = nan(colN, 1);
+diag.searchMin = nan(colN, 1);
+diag.searchMax = nan(colN, 1);
+diag.blocked = false(colN, 1);
+diag.columnMasked = false(colN, 1);
+diag.expandedRetry = false(colN, 1);
+diag.boundaryRejected = false(colN, 1);
+diag.bestOuterRow = nan(colN, 1);
+diag.bestOuterScore = nan(colN, 1);
+diag.bestOuterEvidence = nan(colN, 1);
+diag.bestOuterInward = nan(colN, 1);
+diag.bestBandRow = nan(colN, 1);
+diag.bestBandScore = nan(colN, 1);
+diag.bestBandEvidence = nan(colN, 1);
+diag.bestBandInward = nan(colN, 1);
+diag.bestBandSuspect = false(colN, 1);
+diag.inwardGap = nan(colN, 1);
+diag.outerWeak = false(colN, 1);
+diag.bandOverrides = false(colN, 1);
+diag.chosenRow = nan(colN, 1);
+diag.chosenScore = nan(colN, 1);
+diag.chosenEvidence = nan(colN, 1);
+diag.chosenInward = nan(colN, 1);
+diag.chosenSuspect = false(colN, 1);
+diag.chosenSource = strings(colN, 1);
+diag.anchorRow = nan(colN, 1);
+diag.anchorScore = nan(colN, 1);
+diag.anchorEvidence = nan(colN, 1);
+diag.anchorSource = strings(colN, 1);
+end
+
+
+function diag = record_candidate_diag(diag, col, candSet, cand)
+if candSet.bestOuter.valid
+    diag.bestOuterRow(col) = candSet.bestOuter.row;
+    diag.bestOuterScore(col) = candSet.bestOuter.score;
+    diag.bestOuterEvidence(col) = candSet.bestOuter.evidence;
+    diag.bestOuterInward(col) = candSet.bestOuter.inwardOffset;
+end
+if candSet.bestBand.valid
+    diag.bestBandRow(col) = candSet.bestBand.row;
+    diag.bestBandScore(col) = candSet.bestBand.score;
+    diag.bestBandEvidence(col) = candSet.bestBand.evidence;
+    diag.bestBandInward(col) = candSet.bestBand.inwardOffset;
+    diag.bestBandSuspect(col) = candSet.bestBand.suspect;
+end
+diag.inwardGap(col) = candSet.inwardGap;
+diag.outerWeak(col) = candSet.outerWeak;
+diag.bandOverrides(col) = candSet.bandOverrides;
+if cand.valid
+    diag.chosenRow(col) = cand.row;
+    diag.chosenScore(col) = cand.score;
+    diag.chosenEvidence(col) = cand.evidence;
+    diag.chosenInward(col) = cand.inwardOffset;
+    diag.chosenSuspect(col) = cand.suspect;
+    diag.chosenSource(col) = string(candidate_source_label(cand, candSet));
+end
+end
+
+
+function tf = is_boundary_locked_candidate(cand, searchBounds, edgeName, center, edgeParams)
+tf = false;
+if ~cand.valid || ~isfinite(cand.row) || ~isfinite(center)
+    return;
+end
+
+gapThr = max(edgeParams.maxInwardOverridePx, edgeParams.preferOuterEdgeOnlyGapPx + 2);
+if abs(cand.row - center) < gapThr
+    return;
+end
+
+if strcmp(edgeName, 'top')
+    inwardBoundary = searchBounds(2);
+else
+    inwardBoundary = searchBounds(1);
+end
+
+tf = abs(cand.row - inwardBoundary) <= 1;
+end
+
+
+function label = candidate_source_label(cand, candSet)
+label = "other";
+if cand.valid && candSet.bestOuter.valid && cand.row == candSet.bestOuter.row && abs(cand.score - candSet.bestOuter.score) <= 1e-6
+    label = "outer";
+    return;
+end
+if cand.valid && candSet.bestBand.valid && cand.row == candSet.bestBand.row && abs(cand.score - candSet.bestBand.score) <= 1e-6
+    label = "band";
+end
+end
+
+
+function tf = should_dump_candidate_debug(cfg)
+tf = isfield(cfg, 'sideEdge') && isfield(cfg.sideEdge, 'debug') && ...
+    isfield(cfg.sideEdge.debug, 'dumpCandidates') && cfg.sideEdge.debug.dumpCandidates;
+end
+
+
+function write_candidate_debug_table(candidates, edgeName, passIdx, cfg)
+if ~isfield(candidates, 'diag')
+    return;
+end
+
+diag = candidates.diag;
+tbl = table;
+colN = numel(diag.center);
+tbl.X = (1:colN)';
+tbl.Center = diag.center;
+tbl.SearchMin = diag.searchMin;
+tbl.SearchMax = diag.searchMax;
+tbl.Blocked = diag.blocked;
+tbl.ColumnMasked = diag.columnMasked;
+tbl.BestOuterRow = diag.bestOuterRow;
+tbl.BestOuterScore = diag.bestOuterScore;
+tbl.BestOuterEvidence = diag.bestOuterEvidence;
+tbl.BestOuterInward = diag.bestOuterInward;
+tbl.BestBandRow = diag.bestBandRow;
+tbl.BestBandScore = diag.bestBandScore;
+tbl.BestBandEvidence = diag.bestBandEvidence;
+tbl.BestBandInward = diag.bestBandInward;
+tbl.BestBandSuspect = diag.bestBandSuspect;
+tbl.InwardGap = diag.inwardGap;
+tbl.OuterWeak = diag.outerWeak;
+tbl.BandOverrides = diag.bandOverrides;
+tbl.ChosenRow = diag.chosenRow;
+tbl.ChosenScore = diag.chosenScore;
+tbl.ChosenEvidence = diag.chosenEvidence;
+tbl.ChosenInward = diag.chosenInward;
+tbl.ChosenSuspect = diag.chosenSuspect;
+tbl.ChosenSource = diag.chosenSource;
+tbl.AnchorRow = diag.anchorRow;
+tbl.AnchorScore = diag.anchorScore;
+tbl.AnchorEvidence = diag.anchorEvidence;
+tbl.AnchorSource = diag.anchorSource;
+
+baseName = cfg.sideEdge.debug.candidatePrefix;
+filePath = sprintf('%s_%s_pass%d.csv', baseName, edgeName, passIdx);
+writetable(tbl, filePath);
 end
 
 
@@ -775,28 +1245,30 @@ end
 end
 
 
-function [fusedPath, fusedConf, fusedValid, gapFill, blendWeight, zoneLabel] = fuse_edge_results(edgeName, rawPath, fitPath, conf, valid, markerCols, fitCfg)
+function [fusedPath, fusedConf, fusedValid, gapFill, blendWeight, zoneLabel] = fuse_edge_results(edgeName, rawPath, fitPath, conf, valid, blockedCols, fitCfg)
 rawPath = rawPath(:).';
 fitPath = fitPath(:).';
 conf = conf(:).';
 valid = valid(:).';
-markerCols = markerCols(:).';
+blockedCols = blockedCols(:).';
 residual = abs(rawPath - fitPath);
-usableRaw = ~markerCols & isfinite(rawPath);
+usableRaw = isfinite(rawPath);
 rawMask = usableRaw & residual <= fitCfg.rawResidualTolPx;
 blendMask = usableRaw & residual > fitCfg.rawResidualTolPx & residual <= fitCfg.bridgeResidualTolPx;
-gapMask = markerCols | ~usableRaw | residual > fitCfg.bridgeResidualTolPx;
+gapMask = blockedCols | ~usableRaw | residual > fitCfg.bridgeResidualTolPx;
 inwardGuardMask = false(size(rawPath));
+trendProtectMask = detect_trend_protected_cols(edgeName, rawPath, fitPath, conf, blockedCols, fitCfg);
 
 if strcmp(edgeName, 'top')
     inwardGuardMask = usableRaw & (fitPath - rawPath) >= fitCfg.inwardGuardTolPx;
 elseif strcmp(edgeName, 'bottom')
-    inwardGuardMask = usableRaw & (rawPath - fitPath) >= fitCfg.inwardGuardTolPx;
+    inwardGuardMask = usableRaw & (fitPath - rawPath) >= fitCfg.inwardGuardTolPx;
 end
 
 rawMask = rawMask | inwardGuardMask;
-blendMask = blendMask & ~inwardGuardMask;
-gapMask = gapMask & ~inwardGuardMask;
+rawMask = rawMask | trendProtectMask;
+blendMask = blendMask & ~rawMask;
+gapMask = gapMask & ~rawMask;
 
 fusedPath = fitPath;
 fusedConf = conf;
@@ -805,10 +1277,27 @@ gapFill = false(size(rawPath));
 blendWeight = ones(size(rawPath));
 zoneLabel = repmat("gap_long", size(rawPath));
 
-blendWeight(rawMask) = fitCfg.normalFitWeightMin;
-fusedPath(rawMask) = (1 - fitCfg.normalFitWeightMin) .* rawPath(rawMask) + ...
-    fitCfg.normalFitWeightMin .* fitPath(rawMask);
-zoneLabel(rawMask) = "normal";
+protectedRawMask = inwardGuardMask | trendProtectMask;
+normalRawMask = rawMask & ~protectedRawMask;
+blendWeight(normalRawMask) = fitCfg.normalFitWeightMin;
+fusedPath(normalRawMask) = (1 - fitCfg.normalFitWeightMin) .* rawPath(normalRawMask) + ...
+    fitCfg.normalFitWeightMin .* fitPath(normalRawMask);
+zoneLabel(normalRawMask) = "normal";
+
+if any(inwardGuardMask)
+    fusedPath(inwardGuardMask) = rawPath(inwardGuardMask);
+    blendWeight(inwardGuardMask) = 0;
+    fusedValid(inwardGuardMask) = true;
+    zoneLabel(inwardGuardMask) = "raw_protected";
+end
+
+trendOnlyMask = trendProtectMask & ~inwardGuardMask;
+if any(trendOnlyMask)
+    fusedPath(trendOnlyMask) = rawPath(trendOnlyMask);
+    blendWeight(trendOnlyMask) = 0;
+    fusedValid(trendOnlyMask) = true;
+    zoneLabel(trendOnlyMask) = "trend_protected";
+end
 
 if any(blendMask)
     wFit = compute_blend_fit_weight(residual(blendMask), conf(blendMask), fitCfg);
@@ -839,7 +1328,7 @@ for idx = 1:size(runList, 1)
     end
 end
 
-zoneLabel(markerCols) = "marker";
+zoneLabel(blockedCols & ~protectedRawMask) = "marker";
 blendWeight(gapMask) = 1;
 
 if any(~isfinite(fusedPath))
@@ -862,6 +1351,14 @@ eDrop = clamp_values(dropVal / max(edgeParams.dropRef, eps), 0, 1);
 eValley = clamp_values(valleyVal / max(edgeParams.valleyRef, eps), 0, 1);
 eGrad = clamp_values(gradVal / max(edgeParams.gradRef, eps), 0, 1);
 evidence = 0.45 * eDrop + 0.35 * eValley + 0.20 * eGrad;
+end
+
+
+function cand = make_empty_edge_candidate()
+cand = struct('valid', false, 'row', nan, 'bandOffset', nan, ...
+    'drop', 0, 'valleyDepth', 0, 'localDelta', 0, 'strongEdge', 0, ...
+    'outerEvidence', 0, 'bandEvidence', 0, 'evidence', 0, 'score', 0, ...
+    'hasBand', false, 'suspect', false, 'inwardOffset', inf);
 end
 
 
@@ -1077,7 +1574,6 @@ for idx = 1:numel(topPath)
         neighBot = neighBot(neighMask);
         topInward = topPath(idx) - median(neighTop);
         botInward = median(neighBot) - botPath(idx);
-
         if botInward >= topInward
             botPath(idx) = topPath(idx) + diaFloor;
             botBlendWeight(idx) = max(botBlendWeight(idx), fitCfg.diameterGuardBlendWeightMin);
@@ -1096,6 +1592,117 @@ topZone = topZone(:);
 botZone = botZone(:);
 topBlendWeight = topBlendWeight(:);
 botBlendWeight = botBlendWeight(:);
+end
+
+
+function [pathVals, zoneLabel] = smooth_pixel_kinks(pathVals, zoneLabel, conf, edgeName, fitCfg)
+pathVals = pathVals(:).';
+zoneLabel = string(zoneLabel(:).');
+conf = conf(:).';
+
+specialZones = ["marker", "raw_protected", "blend", "gap_short"];
+specialMask = ismember(zoneLabel, specialZones);
+lowConfMask = conf <= fitCfg.kinkConfMax;
+candidateMask = isfinite(pathVals) & (specialMask | lowConfMask);
+runList = find_invalid_runs(candidateMask);
+
+for idx = 1:size(runList, 1)
+    startIdx = runList(idx, 1);
+    endIdx = runList(idx, 2);
+    runLen = endIdx - startIdx + 1;
+    if runLen > fitCfg.kinkRunMaxLen
+        continue;
+    end
+    if startIdx <= 1 || endIdx >= numel(pathVals)
+        continue;
+    end
+
+    leftVal = pathVals(startIdx - 1);
+    rightVal = pathVals(endIdx + 1);
+    if ~isfinite(leftVal) || ~isfinite(rightVal)
+        continue;
+    end
+
+    xRun = startIdx:endIdx;
+    interpVals = interp1([startIdx - 1, endIdx + 1], [leftVal, rightVal], xRun);
+    rawVals = pathVals(xRun);
+    if any(~isfinite(rawVals))
+        continue;
+    end
+
+    rawTv = abs(rawVals(1) - leftVal) + abs(rightVal - rawVals(end));
+    if runLen > 1
+        rawTv = rawTv + sum(abs(diff(rawVals)));
+    end
+    interpTv = abs(interpVals(1) - leftVal) + abs(rightVal - interpVals(end));
+    if runLen > 1
+        interpTv = interpTv + sum(abs(diff(interpVals)));
+    end
+
+    maxDelta = max(abs(rawVals - interpVals));
+    if maxDelta < fitCfg.kinkInterpMinDeltaPx
+        continue;
+    end
+    if (rawTv - interpTv) < fitCfg.kinkTvGainMin
+        continue;
+    end
+
+    if ~any(specialMask(xRun)) && all(conf(xRun) > fitCfg.kinkConfMax)
+        continue;
+    end
+
+    pathVals(xRun) = interpVals;
+    zoneLabel(xRun) = edgeName + "_smoothed";
+end
+
+for idx = 2:numel(pathVals) - 1
+    if ~candidateMask(idx)
+        continue;
+    end
+    leftVal = pathVals(idx - 1);
+    midVal = pathVals(idx);
+    rightVal = pathVals(idx + 1);
+    if ~isfinite(leftVal) || ~isfinite(midVal) || ~isfinite(rightVal)
+        continue;
+    end
+    interpVal = 0.5 * (leftVal + rightVal);
+    rawTv = abs(midVal - leftVal) + abs(rightVal - midVal);
+    interpTv = abs(interpVal - leftVal) + abs(rightVal - interpVal);
+    if abs(midVal - interpVal) < fitCfg.kinkInterpMinDeltaPx
+        continue;
+    end
+    if (rawTv - interpTv) < fitCfg.kinkTvGainMin
+        continue;
+    end
+    pathVals(idx) = interpVal;
+    zoneLabel(idx) = edgeName + "_smoothed";
+end
+
+for idx = 2:numel(pathVals) - 2
+    if ~(candidateMask(idx) && candidateMask(idx + 1))
+        continue;
+    end
+    leftVal = pathVals(idx - 1);
+    rightVal = pathVals(idx + 2);
+    midVals = pathVals(idx:idx + 1);
+    if ~all(isfinite([leftVal, midVals, rightVal]))
+        continue;
+    end
+    interpVals = interp1([idx - 1, idx + 2], [leftVal, rightVal], idx:idx + 1);
+    rawTv = abs(midVals(1) - leftVal) + abs(midVals(2) - midVals(1)) + abs(rightVal - midVals(2));
+    interpTv = abs(interpVals(1) - leftVal) + abs(interpVals(2) - interpVals(1)) + abs(rightVal - interpVals(2));
+    if max(abs(midVals - interpVals)) < fitCfg.kinkInterpMinDeltaPx
+        continue;
+    end
+    if (rawTv - interpTv) < fitCfg.kinkTvGainMin
+        continue;
+    end
+    pathVals(idx:idx + 1) = interpVals;
+    zoneLabel(idx:idx + 1) = edgeName + "_smoothed";
+end
+
+pathVals = pathVals(:);
+zoneLabel = zoneLabel(:);
 end
 
 
@@ -1204,6 +1811,77 @@ end
 if ~isfield(fitCfg, 'suspiciousBridgeGap') || ~isfinite(fitCfg.suspiciousBridgeGap) || fitCfg.suspiciousBridgeGap < 0
     fitCfg.suspiciousBridgeGap = 2;
 end
+if ~isfield(fitCfg, 'kinkRunMaxLen') || ~isfinite(fitCfg.kinkRunMaxLen) || fitCfg.kinkRunMaxLen < 1
+    fitCfg.kinkRunMaxLen = 3;
+end
+if ~isfield(fitCfg, 'kinkInterpMinDeltaPx') || ~isfinite(fitCfg.kinkInterpMinDeltaPx) || fitCfg.kinkInterpMinDeltaPx <= 0
+    fitCfg.kinkInterpMinDeltaPx = 1.2;
+end
+if ~isfield(fitCfg, 'kinkTvGainMin') || ~isfinite(fitCfg.kinkTvGainMin) || fitCfg.kinkTvGainMin <= 0
+    fitCfg.kinkTvGainMin = 1.0;
+end
+if ~isfield(fitCfg, 'kinkConfMax') || ~isfinite(fitCfg.kinkConfMax) || fitCfg.kinkConfMax <= 0
+    fitCfg.kinkConfMax = 0.90;
+end
+if ~isfield(fitCfg, 'trendProtectConfMin') || ~isfinite(fitCfg.trendProtectConfMin) || fitCfg.trendProtectConfMin <= 0
+    fitCfg.trendProtectConfMin = 0.45;
+end
+if ~isfield(fitCfg, 'trendProtectResidualPx') || ~isfinite(fitCfg.trendProtectResidualPx) || fitCfg.trendProtectResidualPx <= 0
+    fitCfg.trendProtectResidualPx = 6.0;
+end
+if ~isfield(fitCfg, 'trendProtectStepMax') || ~isfinite(fitCfg.trendProtectStepMax) || fitCfg.trendProtectStepMax <= 0
+    fitCfg.trendProtectStepMax = 8.0;
+end
+if ~isfield(fitCfg, 'trendProtectSpanPx') || ~isfinite(fitCfg.trendProtectSpanPx) || fitCfg.trendProtectSpanPx <= 0
+    fitCfg.trendProtectSpanPx = 4.0;
+end
+if ~isfield(fitCfg, 'trendProtectRunMinLen') || ~isfinite(fitCfg.trendProtectRunMinLen) || fitCfg.trendProtectRunMinLen < 1
+    fitCfg.trendProtectRunMinLen = 3;
+end
+end
+
+
+function mask = detect_trend_protected_cols(edgeName, rawPath, fitPath, conf, blockedCols, fitCfg)
+mask = false(size(rawPath));
+if ~strcmp(edgeName, 'top')
+    return;
+end
+
+rawPath = rawPath(:).';
+fitPath = fitPath(:).';
+conf = conf(:).';
+blockedCols = blockedCols(:).';
+residual = abs(rawPath - fitPath);
+usable = isfinite(rawPath) & isfinite(fitPath) & ~blockedCols & ...
+    conf >= fitCfg.trendProtectConfMin & residual >= fitCfg.trendProtectResidualPx;
+
+for idx = 2:numel(rawPath) - 1
+    if ~(usable(idx - 1) && usable(idx) && usable(idx + 1))
+        continue;
+    end
+    d1 = rawPath(idx) - rawPath(idx - 1);
+    d2 = rawPath(idx + 1) - rawPath(idx);
+    if abs(d1) > fitCfg.trendProtectStepMax || abs(d2) > fitCfg.trendProtectStepMax
+        continue;
+    end
+    s1 = sign(d1);
+    s2 = sign(d2);
+    if s1 == 0
+        s1 = s2;
+    end
+    if s2 == 0
+        s2 = s1;
+    end
+    if s1 == 0 || s1 ~= s2
+        continue;
+    end
+    if abs(rawPath(idx + 1) - rawPath(idx - 1)) < fitCfg.trendProtectSpanPx
+        continue;
+    end
+    mask(idx - 1:idx + 1) = true;
+end
+
+mask = keep_min_run_length(mask, fitCfg.trendProtectRunMinLen);
 end
 
 

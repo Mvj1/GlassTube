@@ -23,26 +23,26 @@ imwrite(stripImg, cfg.file.strip);
 %% 侧视边缘提取
 [roiGray, topMask, botMask, pathTbl] = extract_side_edges_robust(cfg);
 show_side_edges(roiGray, topMask, botMask);
-% imwrite(topMask | botMask, cfg.file.side);
+%%%%%% % imwrite(topMask | botMask, cfg.file.side);
 writetable(pathTbl, cfg.file.path);
-% fprintf('侧视边缘已保存为 %s\n', cfg.file.side);
-% fprintf('侧视路径数据已保存为 %s\n', cfg.file.path);
-
-%% 端面轮廓与壁厚分析
-% ensure_right_end_image(cfg);
-leftEndData = analyze_endface(cfg.end.left, cfg);
-rightEndData = analyze_endface(cfg.end.right, cfg);
-% warn_scale_consistency(pathTbl, leftEndData, rightEndData, cfg);
-
-%% 玻璃管三维重建
-build_tube_model(cfg, pathTbl, leftEndData, rightEndData);
-
-%% 最大插入直径估算
-estimate_rod_fit(pathTbl, leftEndData, rightEndData, cfg);
-
+%%%%%% % fprintf('侧视边缘已保存为 %s\n', cfg.file.side);
+%%%%%% % fprintf('侧视路径数据已保存为 %s\n', cfg.file.path);
+%%%%%% 
+%%%%%% %% 端面轮廓与壁厚分析
+%%%%%% % ensure_right_end_image(cfg);
+%%%%%% leftEndData = analyze_endface(cfg.end.left, cfg);
+%%%%%% rightEndData = analyze_endface(cfg.end.right, cfg);
+%%%%%% % warn_scale_consistency(pathTbl, leftEndData, rightEndData, cfg);
+%%%%%%
+%%%%%% %% 玻璃管三维重建
+%%%%%% build_tube_model(cfg, pathTbl, leftEndData, rightEndData);
+%%%%%% 
+%%%%%% %% 最大插入直径估算
+%%%%%% estimate_rod_fit(pathTbl, leftEndData, rightEndData, cfg);
+%%%%%%
 %% 辅助函数
 function cfg = get_cfg()
-cfg.dir.img = './rare data/3052-1big2935';
+cfg.dir.img = './GlassTubeData';
 cfg.dir.ext = '*.bmp';
 
 cfg.step.nominal = 900;
@@ -66,7 +66,7 @@ cfg.file.path = 'tube_path.csv';
 cfg.file.rod = 'rod_fit.png';
 cfg.file.sideCalib = 'side_edge_calibration.mat';
 
-cfg.sideEdge.forceRecalibrate = false;
+cfg.sideEdge.forceRecalibrate = true;
 cfg.sideEdge.baselineTop = [];
 cfg.sideEdge.baselineBot = [];
 cfg.sideEdge.bgSigma = 25;
@@ -87,6 +87,8 @@ cfg.sideEdge.smoothPenalty = 0.18;
 cfg.sideEdge.minCandidateScore = 0.05;
 cfg.sideEdge.minConfidence = 0.35;
 cfg.sideEdge.maxGapToInterp = 80;
+cfg.sideEdge.debug.dumpCandidates = true;
+cfg.sideEdge.debug.candidatePrefix = 'side_candidates';
 
 cfg.sideEdge.fit.method = 'weighted-pchip-rloess';
 cfg.sideEdge.fit.smoothTop = 31;
