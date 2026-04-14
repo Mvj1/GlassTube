@@ -1176,18 +1176,18 @@ dp = -inf(rowN, colN);
 prevIdx = ones(rowN, colN, 'uint16');
 initPenalty = abs(rows - candidates.baseline) / max(1, numel(rows));
 dp(:, 1) = score(:, 1) - initPenalty;
+rowAxis = (1:rowN).';
+deltaMat = abs(rowAxis - rowAxis.');
+overJumpMat = max(0, deltaMat - candidates.maxJumpPerCol);
+transPenalty = cfg.sideEdge.jumpPenalty * (deltaMat .^ 2) + ...
+    candidates.smoothPenalty * (overJumpMat .^ 2);
 
 for col = 2:colN
     prevCost = dp(:, col - 1);
-    for row = 1:rowN
-        delta = abs((1:rowN)' - row);
-        transCost = prevCost - cfg.sideEdge.jumpPenalty * (delta .^ 2);
-        overJump = max(0, delta - candidates.maxJumpPerCol);
-        transCost = transCost - candidates.smoothPenalty * (overJump .^ 2);
-        [bestCost, bestIdx] = max(transCost);
-        dp(row, col) = score(row, col) + bestCost;
-        prevIdx(row, col) = uint16(bestIdx);
-    end
+    transCost = prevCost - transPenalty;
+    [bestCost, bestIdx] = max(transCost, [], 1);
+    dp(:, col) = score(:, col) + bestCost.';
+    prevIdx(:, col) = uint16(bestIdx.');
 end
 
 rowPath = zeros(1, colN, 'uint16');

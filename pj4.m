@@ -66,7 +66,7 @@ cfg.file.path = 'tube_path.csv';
 cfg.file.rod = 'rod_fit.png';
 cfg.file.sideCalib = 'side_edge_calibration.mat';
 
-cfg.sideEdge.forceRecalibrate = true;
+cfg.sideEdge.forceRecalibrate = false;
 cfg.sideEdge.baselineTop = [];
 cfg.sideEdge.baselineBot = [];
 cfg.sideEdge.bgSigma = 25;
@@ -87,7 +87,7 @@ cfg.sideEdge.smoothPenalty = 0.18;
 cfg.sideEdge.minCandidateScore = 0.05;
 cfg.sideEdge.minConfidence = 0.35;
 cfg.sideEdge.maxGapToInterp = 80;
-cfg.sideEdge.debug.dumpCandidates = true;
+cfg.sideEdge.debug.dumpCandidates = false;
 cfg.sideEdge.debug.candidatePrefix = 'side_candidates';
 
 cfg.sideEdge.fit.method = 'weighted-pchip-rloess';
@@ -164,6 +164,7 @@ cfg.end.right.label = '右端';
 cfg.end.right.imgAbs = 'C:\Users\11603\Documents\MATLAB\GlassTube\test.bmp';
 cfg.end.right.innerCsv = 'right_end_inner.csv';
 cfg.end.right.outerCsv = 'right_end_outer.csv';
+cfg.end.persistMasks = false;
 end
 
 
@@ -368,6 +369,8 @@ imshow(edgeMask);
 
 innerMask = trace_inner_profile(edgeMask);
 outerMask = trace_outer_profile(edgeMask);
+innerPts = fix_dims(innerMask);
+outerPts = fix_dims(outerMask);
 
 figure('Name', [endCfg.label, '内轮廓']);
 imshow(innerMask);
@@ -375,8 +378,10 @@ imshow(innerMask);
 figure('Name', [endCfg.label, '外轮廓']);
 imshow(outerMask);
 
-writematrix(outerMask, endCfg.outerCsv);
-writematrix(innerMask, endCfg.innerCsv);
+if isfield(cfg, 'end') && isfield(cfg.end, 'persistMasks') && cfg.end.persistMasks
+    writematrix(outerMask, endCfg.outerCsv);
+    writematrix(innerMask, endCfg.innerCsv);
+end
 
 innerFit = fit_circle_ls(innerMask);
 outerFit = fit_circle_ls(outerMask);
@@ -388,6 +393,8 @@ endData.label = endCfg.label;
 endData.imgAbs = endCfg.imgAbs;
 endData.outerFile = endCfg.outerCsv;
 endData.innerFile = endCfg.innerCsv;
+endData.outerPts = outerPts;
+endData.innerPts = innerPts;
 endData.innerDiaPx = innerFit.r * 2;
 endData.outerDiaPx = outerFit.r * 2;
 endData.innerDiaMm = endData.innerDiaPx / cfg.scale.endPxPerMm;
@@ -747,10 +754,10 @@ end
 
 
 function build_tube_model(cfg, pathTbl, leftEndData, rightEndData)
-leftPtsOut = readmatrix(leftEndData.outerFile);
-leftPtsIn = readmatrix(leftEndData.innerFile);
-rightPtsOut = readmatrix(rightEndData.outerFile);
-rightPtsIn = readmatrix(rightEndData.innerFile);
+leftPtsOut = get_end_profile_points(leftEndData, 'outer');
+leftPtsIn = get_end_profile_points(leftEndData, 'inner');
+rightPtsOut = get_end_profile_points(rightEndData, 'outer');
+rightPtsIn = get_end_profile_points(rightEndData, 'inner');
 
 step = 5;
 xPath = pathTbl.X(1:step:end) / cfg.scale.sidePxPerMm;
@@ -1088,8 +1095,8 @@ end
 
 
 function support = extract_end_inner_support(endData, cfg)
-ptsOut = fix_dims(readmatrix(endData.outerFile));
-ptsIn = fix_dims(readmatrix(endData.innerFile));
+ptsOut = get_end_profile_points(endData, 'outer');
+ptsIn = get_end_profile_points(endData, 'inner');
 ctrOut = mean(ptsOut, 1);
 relY = ptsIn(:, 1) - ctrOut(1);
 
@@ -1097,6 +1104,24 @@ support.topRel = min(relY) / cfg.scale.endPxPerMm;
 support.botRel = max(relY) / cfg.scale.endPxPerMm;
 support.projDia = support.botRel - support.topRel;
 support.centerRel = mean(relY) / cfg.scale.endPxPerMm;
+end
+
+
+function pts = get_end_profile_points(endData, profileName)
+fieldName = [profileName, 'Pts'];
+fileField = [profileName, 'File'];
+
+if isfield(endData, fieldName) && ~isempty(endData.(fieldName))
+    pts = fix_dims(endData.(fieldName));
+    return;
+end
+
+if isfield(endData, fileField) && ~isempty(endData.(fileField))
+    pts = fix_dims(readmatrix(endData.(fileField)));
+    return;
+end
+
+error('Missing %s profile data.', profileName);
 end
 
 
