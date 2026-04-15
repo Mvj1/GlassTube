@@ -1,7 +1,7 @@
-﻿%% 鐜荤拑绠″浘鍍忓鐞嗕笌涓夌淮閲嶅缓
-% 椤堕儴鐩告満绉婚€?00px/5s锛岄《閮ㄧ浉鏈虹缉鏀炬瘮渚?060px/30mm锛屼晶杈圭浉鏈虹缉鏀炬瘮渚?427px/30mm
+%% 玻璃管图像处理与三维重建
+% 顶部相机移动 900 px/5s，侧视比例 1060 px/30mm，端面比例 2427 px/30mm
 
-%% 鍒濆鍖?
+%% 初始化
 clear; clc; close all;
 cfg = get_cfg();
 stageTimings = init_stage_timing_table();
@@ -10,7 +10,7 @@ if is_debug_display_enabled(cfg)
     setup_debug_figure_defaults();
 end
 
-%% 澶氬浘浜掔浉鍏虫嫾鎺?
+%% 多图互相关拼接
 tStage = tic;
 [stripImg, stepList] = stitch_strip(cfg);
 stageTimings = append_stage_timing(stageTimings, 'stitch_strip', toc(tStage));
@@ -19,9 +19,9 @@ stageTimings = append_stage_timing(stageTimings, 'stitch_strip', toc(tStage));
 tStage = tic;
 imwrite(stripImg, cfg.file.strip);
 stageTimings = append_stage_timing(stageTimings, 'write_strip', toc(tStage));
-% fprintf('鎷兼帴缁撴灉宸蹭繚瀛樹负 %s\n', cfg.file.strip);
+% fprintf('拼接结果已保存为 %s\n', cfg.file.strip);
 
-%% 渚ц杈圭紭鎻愬彇
+%% 侧视边缘提取
 tStage = tic;
 [roiGray, topMask, botMask, pathTbl] = extract_side_edges_robust(cfg);
 stageTimings = append_stage_timing(stageTimings, 'extract_side_edges_robust', toc(tStage));
@@ -30,10 +30,10 @@ stageTimings = append_stage_timing(stageTimings, 'extract_side_edges_robust', to
 tStage = tic;
 writetable(pathTbl, cfg.file.path);
 stageTimings = append_stage_timing(stageTimings, 'write_tube_path', toc(tStage));
-%%%%%% % fprintf('渚ц杈圭紭宸蹭繚瀛樹负 %s\n', cfg.file.side);
-%%%%%% % fprintf('渚ц璺緞鏁版嵁宸蹭繚瀛樹负 %s\n', cfg.file.path);
+%%%%%% % fprintf('侧视边缘已保存为 %s\n', cfg.file.side);
+%%%%%% % fprintf('侧视路径数据已保存为 %s\n', cfg.file.path);
 
-%% 绔潰杞粨鍒嗘瀽涓庢渶澶ф彃鍏ョ洿寰勪及绠?
+%% 端面轮廓分析与最大插入直径估算
 tStage = tic;
 ensure_right_end_image(cfg);
 stageTimings = append_stage_timing(stageTimings, 'ensure_right_end_image', toc(tStage));
@@ -73,7 +73,7 @@ if should_dump_stage_timings(cfg)
     writetable(stageTimings, cfg.file.stageTimings);
 end
 
-%% 杈呭姪鍑芥暟
+%% 辅助函数
 function cfg = get_cfg()
 cfg.dir.img = './GlassTubeData';
 cfg.dir.ext = '*.bmp';
@@ -103,7 +103,7 @@ cfg.file.rod = 'rod_fit.png';
 cfg.file.sideCalib = 'side_edge_calibration.mat';
 cfg.file.stageTimings = 'pj4_stage_timings.csv';
 
-cfg.sideEdge.forceRecalibrate = false;
+cfg.sideEdge.forceRecalibrate = true;
 cfg.sideEdge.baselineTop = [];
 cfg.sideEdge.baselineBot = [];
 cfg.sideEdge.bgSigma = 25;
@@ -179,13 +179,13 @@ cfg.sideEdge.bottom.outerBiasWeight = 0.26;
 cfg.sideEdge.bottom.maxInwardOverridePx = 8;
 cfg.sideEdge.bottom.bandEvidenceWeight = 0.18;
 
-cfg.end.left.label = '宸︾';
+cfg.end.left.label = '左端';
 cfg.end.left.imgAbs = 'C:\Users\11603\Documents\MATLAB\GlassTube\40.12-30.49.bmp';
 cfg.end.left.innerCsv = 'left_end_inner.csv';
 cfg.end.left.outerCsv = 'left_end_outer.csv';
 cfg.end.left.cacheMat = 'left_end_analysis.mat';
 
-cfg.end.right.label = '鍙崇';
+cfg.end.right.label = '右端';
 cfg.end.right.imgAbs = 'C:\Users\11603\Documents\MATLAB\GlassTube\test.bmp';
 cfg.end.right.innerCsv = 'right_end_inner.csv';
 cfg.end.right.outerCsv = 'right_end_outer.csv';
@@ -200,7 +200,7 @@ if exist(cfg.end.right.imgAbs, 'file')
 end
 
 copyfile(cfg.end.left.imgAbs, cfg.end.right.imgAbs);
-fprintf('宸茬敓鎴愬彸绔崰浣嶅師鍥?%s\n', cfg.end.right.imgAbs);
+fprintf('已生成右端占位原图 %s\n', cfg.end.right.imgAbs);
 end
 
 
@@ -210,12 +210,12 @@ files = dir(fullfile(cfg.dir.img, cfg.dir.ext));
 files = files(idx);
 
 if numel(files) < 2
-    error('At least two images are required for stitching.');
+    error('需要至少两张图片。');
 end
 
 rotImg = @(img) imrotate(img, cfg.rot.angle, 'bicubic', 'crop');
 
-% fprintf('寮€濮嬫嫾鎺ワ紝棰勮鏃嬭浆瑙掑害 %.2f掳\n', cfg.rot.angle);
+% fprintf('开始拼接，预设旋转角度 %.2f°\n', cfg.rot.angle);
 
 img0 = imread(fullfile(cfg.dir.img, files(1).name));
 img0 = rotImg(img0);
@@ -264,7 +264,7 @@ for k = 2:numel(files)
     if abs(dx - cfg.step.nominal) > cfg.step.search + 10
         dx = cfg.step.nominal;
         dy = 0;
-        warning('Image %d match failed; using nominal step.', k);
+        warning('第 %d 张图匹配失败，改用默认步长。', k);
     end
 
     stepList(k - 1) = dx;
@@ -282,26 +282,26 @@ for k = 2:numel(files)
     prevGray = currGray;
 
     if is_verbose_debug_enabled(cfg)
-        fprintf('绗?%02d 寮犲浘锛氭闀?%d px锛屽瀭鐩磋ˉ鍋?%+d px\n', k, cutW, round(dy));
+        fprintf('第 %02d 张图：步长 %d px，垂直补偿 %+d px\n', k, cutW, round(dy));
     end
 end
 end
 
 
 function show_strip(stripImg, stepList, cfg)
-figure('Name', '鎷兼帴缁撴灉', 'Units', 'normalized', 'Position', [0.1, 0.1, 0.8, 0.6]);
+figure('Name', '拼接结果', 'Units', 'normalized', 'Position', [0.1, 0.1, 0.8, 0.6]);
 
 subplot(2, 1, 1);
 imshow(stripImg);
-title('鎷兼帴缁撴灉');
-xlabel('鍍忕礌');
+title('拼接结果');
+xlabel('像素');
 
 subplot(2, 1, 2);
 plot(stepList, '-o');
 yline(cfg.step.nominal, '--r');
-    title('Detected stitch step');
-xlabel('鍥剧墖搴忓彿');
-ylabel('鍍忕礌');
+title('实际检测步长');
+xlabel('图片序号');
+ylabel('像素');
 grid on;
 end
 
@@ -576,11 +576,11 @@ end
 
 function rodResult = estimate_rod_fit(pathTbl, leftEndData, rightEndData, cfg)
 if ~isfield(leftEndData, 'innerDiaMm') || isempty(leftEndData.innerDiaMm) || ~isfinite(leftEndData.innerDiaMm) || leftEndData.innerDiaMm <= 0
-    error('Left end-face analysis did not produce a usable inner diameter.');
+    error('左端端面分析未得到可用的内径数据，无法执行插入分析。');
 end
 
 if ~isfield(rightEndData, 'innerDiaMm') || isempty(rightEndData.innerDiaMm) || ~isfinite(rightEndData.innerDiaMm) || rightEndData.innerDiaMm <= 0
-    error('Right end-face analysis did not produce a usable inner diameter.');
+    error('右端端面分析未得到可用的内径数据，无法执行插入分析。');
 end
 
 tubeID = min(leftEndData.innerDiaMm, rightEndData.innerDiaMm);
