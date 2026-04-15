@@ -210,7 +210,7 @@ files = dir(fullfile(cfg.dir.img, cfg.dir.ext));
 files = files(idx);
 
 if numel(files) < 2
-    error('闇€瑕佽嚦灏戜袱寮犲浘鐗囥€?);
+    error('At least two images are required for stitching.');
 end
 
 rotImg = @(img) imrotate(img, cfg.rot.angle, 'bicubic', 'crop');
@@ -264,7 +264,7 @@ for k = 2:numel(files)
     if abs(dx - cfg.step.nominal) > cfg.step.search + 10
         dx = cfg.step.nominal;
         dy = 0;
-        warning('绗?%d 寮犲浘鍖归厤澶辫触锛屾敼鐢ㄩ粯璁ゆ闀裤€?, k);
+        warning('Image %d match failed; using nominal step.', k);
     end
 
     stepList(k - 1) = dx;
@@ -299,7 +299,7 @@ xlabel('鍍忕礌');
 subplot(2, 1, 2);
 plot(stepList, '-o');
 yline(cfg.step.nominal, '--r');
-title('瀹為檯妫€娴嬫闀?);
+    title('Detected stitch step');
 xlabel('鍥剧墖搴忓彿');
 ylabel('鍍忕礌');
 grid on;
@@ -576,11 +576,11 @@ end
 
 function rodResult = estimate_rod_fit(pathTbl, leftEndData, rightEndData, cfg)
 if ~isfield(leftEndData, 'innerDiaMm') || isempty(leftEndData.innerDiaMm) || ~isfinite(leftEndData.innerDiaMm) || leftEndData.innerDiaMm <= 0
-    error('宸︾绔潰鍒嗘瀽鏈緱鍒板彲鐢ㄧ殑鍐呭緞鏁版嵁锛屾棤娉曟墽琛屾彃鍏ュ垎鏋愩€?);
+    error('Left end-face analysis did not produce a usable inner diameter.');
 end
 
 if ~isfield(rightEndData, 'innerDiaMm') || isempty(rightEndData.innerDiaMm) || ~isfinite(rightEndData.innerDiaMm) || rightEndData.innerDiaMm <= 0
-    error('鍙崇绔潰鍒嗘瀽鏈緱鍒板彲鐢ㄧ殑鍐呭緞鏁版嵁锛屾棤娉曟墽琛屾彃鍏ュ垎鏋愩€?);
+    error('Right end-face analysis did not produce a usable inner diameter.');
 end
 
 tubeID = min(leftEndData.innerDiaMm, rightEndData.innerDiaMm);
