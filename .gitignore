@@ -4,3 +4,6 @@
 *.png
 *.jpg
 *.csv
+side_edge_calibration.mat
+left_end_analysis.mat
+right_end_analysis.mat
