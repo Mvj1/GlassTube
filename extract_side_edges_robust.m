@@ -1,7 +1,4 @@
 function [roiGray, topMask, botMask, pathTbl] = extract_side_edges_robust(cfg)
-set(groot, 'defaultFigureUnits', 'normalized');
-set(groot, 'defaultFigurePosition', [0, 0, 1, 1]);
-set(groot, 'defaultFigureWindowState', 'maximized');
 if ~exist(cfg.file.strip, 'file')
     error('Missing strip image: %s', cfg.file.strip);
 end
@@ -96,7 +93,7 @@ end
 
 
 function version = side_model_version()
-version = 5;
+version = 6;
 end
 
 
@@ -147,12 +144,10 @@ sampleCols = unique(round(linspace(colStart, colStop, max(15, ceil((colStop - co
 
 topBounds = [max(2, round(rowN * 0.03)), max(8, floor(rowN * 0.45))];
 botBounds = [min(rowN - 8, ceil(rowN * 0.55)), max(rowN - 2, ceil(rowN * 0.55) + 5)];
-blankMask = false(size(prep.gray));
-
 topParams = edge_params_from_cfg(cfg.sideEdge, 'top');
 botParams = edge_params_from_cfg(cfg.sideEdge, 'bottom');
-topSeed = collect_edge_measurements(prep, sampleCols, 'top', topBounds, blankMask, topParams);
-botSeed = collect_edge_measurements(prep, sampleCols, 'bottom', botBounds, blankMask, botParams);
+topSeed = collect_edge_measurements(prep, sampleCols, 'top', topBounds, topParams);
+botSeed = collect_edge_measurements(prep, sampleCols, 'bottom', botBounds, botParams);
 
 if nnz(topSeed.valid) < 8 || nnz(botSeed.valid) < 8
     error('Side-edge calibration failed: not enough valid edge columns were found.');
@@ -173,8 +168,6 @@ sideModel.edgeWindowPx = cfg.sideEdge.edgeWindowPx;
 sideModel.allowBandWithoutValley = cfg.sideEdge.allowBandWithoutValley;
 sideModel.maxJumpPerCol = cfg.sideEdge.maxJumpPerCol;
 sideModel.smoothPenalty = cfg.sideEdge.smoothPenalty;
-sideModel.marker = cfg.sideEdge.marker;
-
 sideModel.top = calibrate_edge_params(topSeed, topParams);
 sideModel.bottom = calibrate_edge_params(botSeed, botParams);
 end
@@ -214,7 +207,7 @@ prep.displayGray = smoothGray;
 end
 
 
-function seed = collect_edge_measurements(prep, sampleCols, edgeName, rowBounds, markerMask, edgeParams)
+function seed = collect_edge_measurements(prep, sampleCols, edgeName, rowBounds, edgeParams)
 edgeRows = nan(numel(sampleCols), 1);
 bandOffsets = nan(numel(sampleCols), 1);
 dropVals = nan(numel(sampleCols), 1);
@@ -225,7 +218,8 @@ valid = false(numel(sampleCols), 1);
 
 for idx = 1:numel(sampleCols)
     col = sampleCols(idx);
-    cand = find_first_true_edge(prep.smoothGray(:, col), markerMask(:, col), edgeName, rowBounds, edgeParams);
+    scanCtx = prepare_edge_scan_context(prep.smoothGray(:, col));
+    cand = find_first_true_edge(scanCtx, edgeName, rowBounds, edgeParams);
     if ~cand.valid
         continue;
     end
@@ -250,43 +244,28 @@ end
 
 function sideResult = detect_side_edges(roiGray, sideModel, cfg)
 prep = preprocess_side_roi(roiGray, cfg);
-markerMask = detect_marker_regions(prep, sideModel, cfg);
 colN = size(prep.gray, 2);
 fitCfg = ensure_fit_cfg_defaults(cfg.sideEdge.fit);
+noBlockedCols = false(1, colN);
 
 baseTop = sideModel.baselineTop * ones(1, colN);
 baseBot = sideModel.baselineBot * ones(1, colN);
 
-topPass1 = build_edge_candidates(prep, sideModel, 'top', markerMask, false(1, colN), baseTop, cfg);
-botPass1 = build_edge_candidates(prep, sideModel, 'bottom', markerMask, false(1, colN), baseBot, cfg);
+topPass1 = build_edge_candidates(prep, sideModel, 'top', baseTop, cfg);
+botPass1 = build_edge_candidates(prep, sideModel, 'bottom', baseBot, cfg);
 topTrace1 = trace_edge_path(topPass1, cfg);
 botTrace1 = trace_edge_path(botPass1, cfg);
 
-topMarker1 = detect_edge_marker_columns(markerMask, topTrace1.path, sideModel.baselineTop, cfg.sideEdge.marker.localRejectPx);
-botMarker1 = detect_edge_marker_columns(markerMask, botTrace1.path, sideModel.baselineBot, cfg.sideEdge.marker.localRejectPx);
+topFit1 = fit_edge_curve(topTrace1.path, topTrace1.conf, topTrace1.valid, noBlockedCols, fitCfg, baseTop, fitCfg.smoothTop);
+botFit1 = fit_edge_curve(botTrace1.path, botTrace1.conf, botTrace1.valid, noBlockedCols, fitCfg, baseBot, fitCfg.smoothBot);
 
-topFit1 = fit_edge_curve(topTrace1.path, topTrace1.conf, topTrace1.valid, topMarker1, fitCfg, baseTop, fitCfg.smoothTop);
-botFit1 = fit_edge_curve(botTrace1.path, botTrace1.conf, botTrace1.valid, botMarker1, fitCfg, baseBot, fitCfg.smoothBot);
-
-topPass2 = build_edge_candidates(prep, sideModel, 'top', markerMask, topMarker1, topFit1, cfg);
-botPass2 = build_edge_candidates(prep, sideModel, 'bottom', markerMask, botMarker1, botFit1, cfg);
+topPass2 = build_edge_candidates(prep, sideModel, 'top', topFit1, cfg);
+botPass2 = build_edge_candidates(prep, sideModel, 'bottom', botFit1, cfg);
 topTrace2 = trace_edge_path(topPass2, cfg);
 botTrace2 = trace_edge_path(botPass2, cfg);
 
-topMarker = detect_edge_marker_columns(markerMask, topFit1, sideModel.baselineTop, cfg.sideEdge.marker.localRejectPx);
-botMarker = detect_edge_marker_columns(markerMask, botFit1, sideModel.baselineBot, cfg.sideEdge.marker.localRejectPx);
-topMarker = topMarker | detect_edge_marker_columns(markerMask, topTrace2.path, sideModel.baselineTop, cfg.sideEdge.marker.localRejectPx);
-botMarker = botMarker | detect_edge_marker_columns(markerMask, botTrace2.path, sideModel.baselineBot, cfg.sideEdge.marker.localRejectPx);
-topReject = detect_inward_outlier_columns(topTrace2.path, topTrace2.conf, topTrace2.valid, topMarker, 'top', fitCfg);
-botReject = detect_inward_outlier_columns(botTrace2.path, botTrace2.conf, botTrace2.valid, botMarker, 'bottom', fitCfg);
-topSuspect = detect_suspect_contamination_columns( ...
-    topTrace2.path, topTrace2.conf, topTrace2.valid, topMarker, ...
-    botTrace2.path, botTrace2.valid, botMarker, 'top', fitCfg);
-botSuspect = detect_suspect_contamination_columns( ...
-    botTrace2.path, botTrace2.conf, botTrace2.valid, botMarker, ...
-    topTrace2.path, topTrace2.valid, topMarker, 'bottom', fitCfg);
-topBlocked = topMarker | topReject | topSuspect | topPass2.suspectCols(:).';
-botBlocked = botMarker | botReject | botSuspect | botPass2.suspectCols(:).';
+topBlocked = topPass2.suspectCols(:).';
+botBlocked = botPass2.suspectCols(:).';
 
 topFit = fit_edge_curve(topTrace2.path, topTrace2.conf, topTrace2.valid, topBlocked, fitCfg, topFit1, fitCfg.smoothTop);
 botFit = fit_edge_curve(botTrace2.path, botTrace2.conf, botTrace2.valid, botBlocked, fitCfg, botFit1, fitCfg.smoothBot);
@@ -321,51 +300,10 @@ sideResult.bot.marker = botBlocked(:);
 sideResult.bot.gapFill = botGapFill(:);
 sideResult.bot.blendWeight = botBlendW(:);
 sideResult.bot.zone = botZone(:);
-
-if should_dump_candidate_debug(cfg)
-    write_candidate_debug_table(topPass1, 'top', 1, cfg);
-    write_candidate_debug_table(topPass2, 'top', 2, cfg);
-    write_candidate_debug_table(botPass1, 'bottom', 1, cfg);
-    write_candidate_debug_table(botPass2, 'bottom', 2, cfg);
-end
 end
 
 
-function markerMask = detect_marker_regions(prep, sideModel, cfg)
-[rowN, colN] = size(prep.gray);
-rowMin = max(1, sideModel.baselineTop - sideModel.searchOutsidePx);
-rowMax = min(rowN, sideModel.baselineBot + sideModel.searchOutsidePx);
-
-searchMask = false(rowN, colN);
-searchMask(rowMin:rowMax, :) = true;
-
-blackHat = imbothat(prep.gray, strel('disk', cfg.sideEdge.marker.structRadius));
-vals = blackHat(searchMask);
-thr = max(cfg.sideEdge.marker.darkThr, median(vals) + cfg.sideEdge.marker.madScale * robust_mad(vals));
-markerMask = searchMask & blackHat >= thr;
-markerMask = bwareaopen(markerMask, cfg.sideEdge.marker.minArea);
-markerMask = imdilate(markerMask, strel('line', cfg.sideEdge.marker.edgeDilatePx, 0));
-end
-
-
-function markerCols = detect_edge_marker_columns(markerMask, guidePath, fallbackRow, localRejectPx)
-colN = size(markerMask, 2);
-rowN = size(markerMask, 1);
-markerCols = false(1, colN);
-
-for col = 1:colN
-    center = fallbackRow;
-    if col <= numel(guidePath) && isfinite(guidePath(col))
-        center = guidePath(col);
-    end
-    r1 = max(1, round(center) - localRejectPx);
-    r2 = min(rowN, round(center) + localRejectPx);
-    markerCols(col) = any(markerMask(r1:r2, col));
-end
-end
-
-
-function candidates = build_edge_candidates(prep, sideModel, edgeName, markerMask, blockedCols, priorCenter, cfg)
+function candidates = build_edge_candidates(prep, sideModel, edgeName, priorCenter, cfg)
 [rowN, colN] = size(prep.gray);
 bandRows = build_runtime_band(edgeName, sideModel, priorCenter, rowN);
 rowCount = numel(bandRows);
@@ -375,7 +313,6 @@ score = cfg.sideEdge.invalidScore * ones(rowCount, colN);
 evidence = zeros(rowCount, colN);
 valid = false(rowCount, colN);
 suspectCols = false(1, colN);
-diag = init_candidate_diag(colN);
 
 for col = 1:colN
     center = priorCenter(min(col, numel(priorCenter)));
@@ -386,22 +323,8 @@ for col = 1:colN
     fallbackIdx = clamp_row_to_band(center, bandRows);
 
     searchBounds = local_search_bounds(edgeName, center, sideModel, rowN);
-    diag.center(col) = center;
-    diag.searchMin(col) = searchBounds(1);
-    diag.searchMax(col) = searchBounds(2);
-    diag.blocked(col) = blockedCols(min(col, numel(blockedCols)));
-    if mean(markerMask(searchBounds(1):searchBounds(2), col)) > cfg.sideEdge.marker.columnCoverageThr
-        score(fallbackIdx, col) = cfg.sideEdge.invalidScore - cfg.sideEdge.markerPenalty;
-        diag.columnMasked(col) = true;
-        continue;
-    end
-
-    if blockedCols(min(col, numel(blockedCols)))
-        score(fallbackIdx, col) = cfg.sideEdge.invalidScore - cfg.sideEdge.markerPenalty;
-        continue;
-    end
-
-    [cand, candSet] = find_first_true_edge(prep.smoothGray(:, col), markerMask(:, col), edgeName, searchBounds, edgeParams);
+    scanCtx = prepare_edge_scan_context(prep.smoothGray(:, col));
+    [cand, candSet] = find_first_true_edge(scanCtx, edgeName, searchBounds, edgeParams);
     cand = select_runtime_candidate(cand, candSet, center, cfg.sideEdge, edgeParams);
     retryExpanded = false;
     boundaryLocked = is_boundary_locked_candidate(cand, searchBounds, edgeName, center, edgeParams);
@@ -412,15 +335,12 @@ for col = 1:colN
             if strcmp(edgeName, 'top')
                 retryParams = relaxed_retry_edge_params(edgeParams);
             end
-            [candEx, candSetEx] = find_first_true_edge(prep.smoothGray(:, col), markerMask(:, col), edgeName, expandedBounds, retryParams);
+            [candEx, candSetEx] = find_first_true_edge(scanCtx, edgeName, expandedBounds, retryParams);
             candEx = select_runtime_candidate(candEx, candSetEx, center, cfg.sideEdge, edgeParams);
             if candEx.valid
                 cand = candEx;
                 candSet = candSetEx;
                 searchBounds = expandedBounds;
-                diag.searchMin(col) = expandedBounds(1);
-                diag.searchMax(col) = expandedBounds(2);
-                diag.expandedRetry(col) = true;
                 retryExpanded = true;
                 boundaryLocked = is_boundary_locked_candidate(cand, searchBounds, edgeName, center, edgeParams);
             end
@@ -430,17 +350,11 @@ for col = 1:colN
         cand = make_empty_edge_candidate();
         candSet = struct('bestOuter', make_empty_edge_candidate(), 'bestBand', make_empty_edge_candidate(), ...
             'inwardGap', inf, 'outerWeak', false, 'bandOverrides', false);
-        diag.boundaryRejected(col) = true;
     end
-    diag = record_candidate_diag(diag, col, candSet, cand);
 
     if ~cand.valid
         score(fallbackIdx, col) = cfg.sideEdge.invalidScore;
-        [score, evidence, valid, anchorInfo] = stamp_center_anchor(score, evidence, valid, bandRows, col, center, cand, candSet, edgeName, cfg.sideEdge, edgeParams);
-        diag.anchorRow(col) = anchorInfo.row;
-        diag.anchorScore(col) = anchorInfo.score;
-        diag.anchorEvidence(col) = anchorInfo.evidence;
-        diag.anchorSource(col) = string(anchorInfo.source);
+        [score, evidence, valid, ~] = stamp_center_anchor(score, evidence, valid, bandRows, col, center, cand, candSet, edgeName, cfg.sideEdge, edgeParams);
         continue;
     end
 
@@ -468,11 +382,7 @@ for col = 1:colN
         [score, evidence, valid] = stamp_transition_bridge(score, evidence, valid, bandRows, col, center, cand, edgeName, score(idx, col), evidenceVal, cfg.sideEdge);
     end
 
-    [score, evidence, valid, anchorInfo] = stamp_center_anchor(score, evidence, valid, bandRows, col, center, cand, candSet, edgeName, cfg.sideEdge, edgeParams);
-    diag.anchorRow(col) = anchorInfo.row;
-    diag.anchorScore(col) = anchorInfo.score;
-    diag.anchorEvidence(col) = anchorInfo.evidence;
-    diag.anchorSource(col) = string(anchorInfo.source);
+    [score, evidence, valid, ~] = stamp_center_anchor(score, evidence, valid, bandRows, col, center, cand, candSet, edgeName, cfg.sideEdge, edgeParams);
 end
 
 candidates.rows = bandRows(:);
@@ -480,7 +390,6 @@ candidates.score = score;
 candidates.evidence = evidence;
 candidates.valid = valid;
 candidates.suspectCols = suspectCols(:);
-candidates.diag = diag;
 validCenter = priorCenter(isfinite(priorCenter));
 if isempty(validCenter)
     candidates.baseline = default_row_for_edge(edgeName, sideModel);
@@ -586,7 +495,17 @@ end
 end
 
 
-function [cand, candSet] = find_first_true_edge(profile, markerCol, edgeName, rowBounds, params)
+function scanCtx = prepare_edge_scan_context(profile)
+profile = profile(:);
+
+scanCtx.profile = profile;
+scanCtx.nRows = numel(profile);
+scanCtx.profileCum = [0; cumsum(profile)];
+scanCtx.diffAbs = abs(diff(profile));
+end
+
+
+function [cand, candSet] = find_first_true_edge(scanCtx, edgeName, rowBounds, params)
 cand = make_empty_edge_candidate();
 bestOuter = cand;
 bestBand = cand;
@@ -609,19 +528,25 @@ for row = scanRows
         localDeltaRatio = min(localDeltaRatio, params.relaxedOuterGradRatio);
     end
 
-    edgeInfo = compute_edge_windows(profile, markerCol, edgeName, row, params.edgeWindowPx, ...
+    edgeInfo = compute_edge_windows(scanCtx, edgeName, row, params.edgeWindowPx, ...
         minDrop, localDeltaRatio);
     if ~edgeInfo.valid
         continue;
     end
 
-    bandInfo = verify_inner_dark_band(profile, markerCol, edgeName, row, edgeInfo.outsideMean, params);
     outerEvidence = compute_outer_edge_evidence(edgeInfo.drop, edgeInfo.localDelta, params);
     if outerEvidence < params.minOuterEvidence
         continue;
     end
 
-    bandEvidence = compute_band_evidence(bandInfo.valleyDepth, bandInfo.strongEdge, params);
+    % In the clean-sample path, the outer edge is the primary decision signal.
+    % The inner dark band only contributes a small bonus after the outer edge passes.
+    bandInfo = verify_inner_dark_band(scanCtx, edgeName, row, edgeInfo.outsideMean, params);
+    bandEvidence = 0;
+    if bandInfo.hasBand || params.allowBandWithoutValley
+        bandEvidence = compute_band_evidence(bandInfo.valleyDepth, bandInfo.strongEdge, params);
+    end
+
     candNow = cand;
     candNow.valid = true;
     candNow.row = row;
@@ -637,55 +562,18 @@ for row = scanRows
 
     outerScore = outerEvidence + outward_position_bonus(inwardOffset, params);
     candNow.evidence = outerEvidence;
-    candNow.score = outerScore;
+    candNow.score = outerScore + 0.15 * params.bandEvidenceWeight * bandEvidence;
     if ~bestOuter.valid || is_better_candidate(candNow, bestOuter, true)
         bestOuter = candNow;
     end
-
-    if bandInfo.hasBand || params.allowBandWithoutValley
-        candNow.evidence = min(1, 0.7 * outerEvidence + 0.3 * bandEvidence);
-        candNow.score = outerScore + params.bandEvidenceWeight * bandEvidence;
-        if ~bestBand.valid || is_better_candidate(candNow, bestBand, false)
-            bestBand = candNow;
-        end
-    end
 end
 
-if bestOuter.valid && ~bestBand.valid
-    cand = bestOuter;
-    candSet.bestOuter = bestOuter;
-    return;
-end
-if bestBand.valid && ~bestOuter.valid
-    cand = bestBand;
-    cand.suspect = true;
-    candSet.bestBand = cand;
-    return;
-end
-if ~bestOuter.valid && ~bestBand.valid
+if ~bestOuter.valid
     return;
 end
 
-inwardGap = inward_distance_between_rows(bestOuter.row, bestBand.row, edgeName);
-outerWeak = bestOuter.outerEvidence <= (params.minOuterEvidence + params.outerEvidenceOverrideMargin);
-bandOverrides = bestBand.score >= (bestOuter.score + params.bandSelectMargin);
-bestBand.suspect = inwardGap > max(2, round(0.6 * params.maxInwardOverridePx));
 candSet.bestOuter = bestOuter;
-candSet.bestBand = bestBand;
-candSet.inwardGap = inwardGap;
-candSet.outerWeak = outerWeak;
-candSet.bandOverrides = bandOverrides;
-
-if inwardGap > params.maxInwardOverridePx && ~outerWeak
-    cand = bestOuter;
-    return;
-end
-
-if bandOverrides && (inwardGap <= params.maxInwardOverridePx || outerWeak)
-    cand = bestBand;
-else
-    cand = bestOuter;
-end
+cand = bestOuter;
 end
 
 
@@ -876,7 +764,11 @@ for idx = 1:numel(choices)
         anchorRow = candNow.row;
         anchorEvidence = candNow.evidence;
         anchorScore = scoreNow;
-        anchorInfo.source = string(candidate_source_label(candNow, candSet));
+        if idx == 1
+            anchorInfo.source = "outer";
+        else
+            anchorInfo.source = "band";
+        end
     end
 end
 
@@ -947,68 +839,6 @@ end
 end
 
 
-function diag = init_candidate_diag(colN)
-diag = struct();
-diag.center = nan(colN, 1);
-diag.searchMin = nan(colN, 1);
-diag.searchMax = nan(colN, 1);
-diag.blocked = false(colN, 1);
-diag.columnMasked = false(colN, 1);
-diag.expandedRetry = false(colN, 1);
-diag.boundaryRejected = false(colN, 1);
-diag.bestOuterRow = nan(colN, 1);
-diag.bestOuterScore = nan(colN, 1);
-diag.bestOuterEvidence = nan(colN, 1);
-diag.bestOuterInward = nan(colN, 1);
-diag.bestBandRow = nan(colN, 1);
-diag.bestBandScore = nan(colN, 1);
-diag.bestBandEvidence = nan(colN, 1);
-diag.bestBandInward = nan(colN, 1);
-diag.bestBandSuspect = false(colN, 1);
-diag.inwardGap = nan(colN, 1);
-diag.outerWeak = false(colN, 1);
-diag.bandOverrides = false(colN, 1);
-diag.chosenRow = nan(colN, 1);
-diag.chosenScore = nan(colN, 1);
-diag.chosenEvidence = nan(colN, 1);
-diag.chosenInward = nan(colN, 1);
-diag.chosenSuspect = false(colN, 1);
-diag.chosenSource = strings(colN, 1);
-diag.anchorRow = nan(colN, 1);
-diag.anchorScore = nan(colN, 1);
-diag.anchorEvidence = nan(colN, 1);
-diag.anchorSource = strings(colN, 1);
-end
-
-
-function diag = record_candidate_diag(diag, col, candSet, cand)
-if candSet.bestOuter.valid
-    diag.bestOuterRow(col) = candSet.bestOuter.row;
-    diag.bestOuterScore(col) = candSet.bestOuter.score;
-    diag.bestOuterEvidence(col) = candSet.bestOuter.evidence;
-    diag.bestOuterInward(col) = candSet.bestOuter.inwardOffset;
-end
-if candSet.bestBand.valid
-    diag.bestBandRow(col) = candSet.bestBand.row;
-    diag.bestBandScore(col) = candSet.bestBand.score;
-    diag.bestBandEvidence(col) = candSet.bestBand.evidence;
-    diag.bestBandInward(col) = candSet.bestBand.inwardOffset;
-    diag.bestBandSuspect(col) = candSet.bestBand.suspect;
-end
-diag.inwardGap(col) = candSet.inwardGap;
-diag.outerWeak(col) = candSet.outerWeak;
-diag.bandOverrides(col) = candSet.bandOverrides;
-if cand.valid
-    diag.chosenRow(col) = cand.row;
-    diag.chosenScore(col) = cand.score;
-    diag.chosenEvidence(col) = cand.evidence;
-    diag.chosenInward(col) = cand.inwardOffset;
-    diag.chosenSuspect(col) = cand.suspect;
-    diag.chosenSource(col) = string(candidate_source_label(cand, candSet));
-end
-end
-
-
 function tf = is_boundary_locked_candidate(cand, searchBounds, edgeName, center, edgeParams)
 tf = false;
 if ~cand.valid || ~isfinite(cand.row) || ~isfinite(center)
@@ -1030,70 +860,10 @@ tf = abs(cand.row - inwardBoundary) <= 1;
 end
 
 
-function label = candidate_source_label(cand, candSet)
-label = "other";
-if cand.valid && candSet.bestOuter.valid && cand.row == candSet.bestOuter.row && abs(cand.score - candSet.bestOuter.score) <= 1e-6
-    label = "outer";
-    return;
-end
-if cand.valid && candSet.bestBand.valid && cand.row == candSet.bestBand.row && abs(cand.score - candSet.bestBand.score) <= 1e-6
-    label = "band";
-end
-end
-
-
-function tf = should_dump_candidate_debug(cfg)
-tf = isfield(cfg, 'sideEdge') && isfield(cfg.sideEdge, 'debug') && ...
-    isfield(cfg.sideEdge.debug, 'dumpCandidates') && cfg.sideEdge.debug.dumpCandidates;
-end
-
-
-function write_candidate_debug_table(candidates, edgeName, passIdx, cfg)
-if ~isfield(candidates, 'diag')
-    return;
-end
-
-diag = candidates.diag;
-tbl = table;
-colN = numel(diag.center);
-tbl.X = (1:colN)';
-tbl.Center = diag.center;
-tbl.SearchMin = diag.searchMin;
-tbl.SearchMax = diag.searchMax;
-tbl.Blocked = diag.blocked;
-tbl.ColumnMasked = diag.columnMasked;
-tbl.BestOuterRow = diag.bestOuterRow;
-tbl.BestOuterScore = diag.bestOuterScore;
-tbl.BestOuterEvidence = diag.bestOuterEvidence;
-tbl.BestOuterInward = diag.bestOuterInward;
-tbl.BestBandRow = diag.bestBandRow;
-tbl.BestBandScore = diag.bestBandScore;
-tbl.BestBandEvidence = diag.bestBandEvidence;
-tbl.BestBandInward = diag.bestBandInward;
-tbl.BestBandSuspect = diag.bestBandSuspect;
-tbl.InwardGap = diag.inwardGap;
-tbl.OuterWeak = diag.outerWeak;
-tbl.BandOverrides = diag.bandOverrides;
-tbl.ChosenRow = diag.chosenRow;
-tbl.ChosenScore = diag.chosenScore;
-tbl.ChosenEvidence = diag.chosenEvidence;
-tbl.ChosenInward = diag.chosenInward;
-tbl.ChosenSuspect = diag.chosenSuspect;
-tbl.ChosenSource = diag.chosenSource;
-tbl.AnchorRow = diag.anchorRow;
-tbl.AnchorScore = diag.anchorScore;
-tbl.AnchorEvidence = diag.anchorEvidence;
-tbl.AnchorSource = diag.anchorSource;
-
-baseName = cfg.sideEdge.debug.candidatePrefix;
-filePath = sprintf('%s_%s_pass%d.csv', baseName, edgeName, passIdx);
-writetable(tbl, filePath);
-end
-
-
-function edgeInfo = compute_edge_windows(profile, markerCol, edgeName, row, windowPx, minDrop, localDeltaRatio)
+function edgeInfo = compute_edge_windows(scanCtx, edgeName, row, windowPx, minDrop, localDeltaRatio)
 edgeInfo = struct('valid', false, 'drop', 0, 'outsideMean', 0, 'localDelta', 0);
-nRows = numel(profile);
+nRows = scanCtx.nRows;
+profile = scanCtx.profile;
 
 if nargin < 6 || ~isfinite(minDrop)
     minDrop = 0;
@@ -1115,12 +885,9 @@ end
 if isempty(outsideRows) || isempty(insideRows)
     return;
 end
-if any(markerCol(outsideRows)) || any(markerCol(insideRows))
-    return;
-end
 
-outsideMean = mean(profile(outsideRows));
-insideMean = mean(profile(insideRows));
+outsideMean = range_mean(scanCtx.profileCum, outsideRows(1), outsideRows(end));
+insideMean = range_mean(scanCtx.profileCum, insideRows(1), insideRows(end));
 drop = outsideMean - insideMean;
 
 if drop < minDrop
@@ -1137,9 +904,10 @@ edgeInfo.localDelta = localDelta;
 end
 
 
-function bandInfo = verify_inner_dark_band(profile, markerCol, edgeName, row, outsideMean, params)
+function bandInfo = verify_inner_dark_band(scanCtx, edgeName, row, outsideMean, params)
 bandInfo = struct('hasBand', false, 'offset', nan, 'valleyDepth', 0, 'strongEdge', 0);
-nRows = numel(profile);
+nRows = scanCtx.nRows;
+profile = scanCtx.profile;
 
 if strcmp(edgeName, 'top')
     bandRows = row + params.bandOffsetMinPx:min(nRows, row + params.bandOffsetMaxPx);
@@ -1150,16 +918,17 @@ end
 if isempty(bandRows)
     return;
 end
-if mean(markerCol(bandRows)) > 0.5
-    return;
-end
 
 [valleyVal, valleyIdx] = min(profile(bandRows));
 bandInfo.valleyDepth = outsideMean - valleyVal;
 bandInfo.offset = abs(bandRows(valleyIdx) - row);
 
 gradRows = max(1, bandRows(1) - 1):min(nRows, bandRows(end) + 1);
-bandInfo.strongEdge = max(abs(diff(profile(gradRows))));
+if numel(gradRows) >= 2
+    bandInfo.strongEdge = max(scanCtx.diffAbs(gradRows(1):gradRows(end) - 1));
+else
+    bandInfo.strongEdge = 0;
+end
 bandInfo.hasBand = bandInfo.valleyDepth >= params.valleyDepthThr && ...
     bandInfo.strongEdge >= params.strongEdgeRatio * params.firstEdgeMinDrop;
 end
@@ -1191,7 +960,6 @@ for col = 2:colN
 end
 
 rowPath = zeros(1, colN, 'uint16');
-rawScore = zeros(1, colN);
 pickedValid = false(1, colN);
 colIdx = 1:colN;
 
@@ -1201,7 +969,6 @@ for col = colN:-1:2
 end
 
 linIdx = sub2ind(size(score), double(rowPath), colIdx);
-rawScore(:) = score(linIdx);
 pickedValid(:) = validMap(linIdx);
 
 trace.path = rows(double(rowPath)).';
@@ -1346,14 +1113,6 @@ zoneLabel = zoneLabel(:);
 end
 
 
-function evidence = compute_edge_evidence(dropVal, valleyVal, gradVal, edgeParams)
-eDrop = clamp_values(dropVal / max(edgeParams.dropRef, eps), 0, 1);
-eValley = clamp_values(valleyVal / max(edgeParams.valleyRef, eps), 0, 1);
-eGrad = clamp_values(gradVal / max(edgeParams.gradRef, eps), 0, 1);
-evidence = 0.45 * eDrop + 0.35 * eValley + 0.20 * eGrad;
-end
-
-
 function cand = make_empty_edge_candidate()
 cand = struct('valid', false, 'row', nan, 'bandOffset', nan, ...
     'drop', 0, 'valleyDepth', 0, 'localDelta', 0, 'strongEdge', 0, ...
@@ -1413,121 +1172,6 @@ else
     offset = scanStart - row;
 end
 offset = max(0, offset);
-end
-
-
-function offset = inward_distance_between_rows(outerRow, innerRow, edgeName)
-if strcmp(edgeName, 'top')
-    offset = innerRow - outerRow;
-else
-    offset = outerRow - innerRow;
-end
-offset = max(0, offset);
-end
-
-
-function rejectCols = detect_inward_outlier_columns(rawPath, conf, valid, blockedCols, edgeName, fitCfg)
-rawPath = rawPath(:).';
-conf = conf(:).';
-valid = valid(:).';
-blockedCols = blockedCols(:).';
-rejectCols = false(size(rawPath));
-halfWin = floor(make_odd_span(fitCfg.inwardOutlierWindow) / 2);
-
-for idx = 1:numel(rawPath)
-    if ~valid(idx) || blockedCols(idx) || ~isfinite(rawPath(idx))
-        continue;
-    end
-    leftIdx = max(1, idx - halfWin);
-    rightIdx = min(numel(rawPath), idx + halfWin);
-    neighMask = valid(leftIdx:rightIdx) & ~blockedCols(leftIdx:rightIdx) & isfinite(rawPath(leftIdx:rightIdx));
-    neighMask(idx - leftIdx + 1) = false;
-    neighVals = rawPath(leftIdx:rightIdx);
-    neighVals = neighVals(neighMask);
-    if numel(neighVals) < fitCfg.inwardOutlierMinNeighbors
-        continue;
-    end
-
-    localMed = median(neighVals);
-    if strcmp(edgeName, 'top')
-        inwardDelta = rawPath(idx) - localMed;
-    else
-        inwardDelta = localMed - rawPath(idx);
-    end
-
-    if inwardDelta >= fitCfg.inwardOutlierTolPx && conf(idx) <= fitCfg.inwardOutlierConfMax
-        rejectCols(idx) = true;
-    end
-end
-end
-
-
-function suspectCols = detect_suspect_contamination_columns( ...
-    rawPath, conf, valid, markerCols, otherPath, otherValid, otherBlocked, edgeName, fitCfg)
-rawPath = rawPath(:).';
-conf = conf(:).';
-valid = valid(:).';
-markerCols = markerCols(:).';
-otherPath = otherPath(:).';
-otherValid = otherValid(:).';
-otherBlocked = otherBlocked(:).';
-suspectCols = false(size(rawPath));
-halfWin = floor(make_odd_span(fitCfg.diameterGuardWindow) / 2);
-
-for idx = 1:numel(rawPath)
-    if ~valid(idx) || ~isfinite(rawPath(idx))
-        continue;
-    end
-    leftIdx = max(1, idx - halfWin);
-    rightIdx = min(numel(rawPath), idx + halfWin);
-
-    neighMask = valid(leftIdx:rightIdx) & ~markerCols(leftIdx:rightIdx) & isfinite(rawPath(leftIdx:rightIdx));
-    neighMask(idx - leftIdx + 1) = false;
-    neighVals = rawPath(leftIdx:rightIdx);
-    neighVals = neighVals(neighMask);
-    if numel(neighVals) < fitCfg.diameterGuardMinNeighbors
-        continue;
-    end
-
-    localMed = median(neighVals);
-    if strcmp(edgeName, 'top')
-        inwardDelta = rawPath(idx) - localMed;
-    else
-        inwardDelta = localMed - rawPath(idx);
-    end
-    if inwardDelta < fitCfg.inwardGuardTolPx
-        continue;
-    end
-
-    diaShrink = 0;
-    if idx <= numel(otherPath) && otherValid(idx) && ~otherBlocked(idx) && isfinite(otherPath(idx))
-        localOtherMask = otherValid(leftIdx:rightIdx) & ~otherBlocked(leftIdx:rightIdx) & ...
-            isfinite(otherPath(leftIdx:rightIdx));
-        localOtherMask = localOtherMask & neighMask;
-        if strcmp(edgeName, 'top')
-            diaVals = otherPath(leftIdx:rightIdx) - rawPath(leftIdx:rightIdx);
-            curDia = otherPath(idx) - rawPath(idx);
-        else
-            diaVals = rawPath(leftIdx:rightIdx) - otherPath(leftIdx:rightIdx);
-            curDia = rawPath(idx) - otherPath(idx);
-        end
-        diaVals = diaVals(localOtherMask);
-        if numel(diaVals) >= fitCfg.diameterGuardMinNeighbors
-            diaShrink = median(diaVals) - curDia;
-        end
-    end
-
-    markerNear = markerCols(idx);
-    weakConf = conf(idx) <= fitCfg.inwardOutlierConfMax;
-    if (markerNear || weakConf || diaShrink >= fitCfg.diameterGuardTolPx) && ...
-            inwardDelta >= fitCfg.inwardGuardTolPx
-        suspectCols(idx) = true;
-    end
-end
-
-suspectCols = merge_close_runs(suspectCols, fitCfg.suspiciousBridgeGap);
-suspectCols = keep_min_run_length(suspectCols, fitCfg.suspiciousRunMinLen);
-suspectCols = suspectCols(:).';
 end
 
 
@@ -1740,12 +1384,6 @@ end
 if ~isfield(edgeParams, 'bandEvidenceWeight') || ~isfinite(edgeParams.bandEvidenceWeight)
     edgeParams.bandEvidenceWeight = 0.35;
 end
-if ~isfield(edgeParams, 'outerEvidenceOverrideMargin') || ~isfinite(edgeParams.outerEvidenceOverrideMargin) || edgeParams.outerEvidenceOverrideMargin < 0
-    edgeParams.outerEvidenceOverrideMargin = 0.10;
-end
-if ~isfield(edgeParams, 'bandSelectMargin') || ~isfinite(edgeParams.bandSelectMargin)
-    edgeParams.bandSelectMargin = 0.04;
-end
 if ~isfield(edgeParams, 'preferOuterEdgeOnlyGapPx') || ~isfinite(edgeParams.preferOuterEdgeOnlyGapPx) || edgeParams.preferOuterEdgeOnlyGapPx < 0
     edgeParams.preferOuterEdgeOnlyGapPx = 4;
 end
@@ -1912,23 +1550,6 @@ confVal = min(leftVal, rightVal);
 end
 
 
-function mask = merge_close_runs(mask, maxGap)
-mask = logical(mask(:).');
-if maxGap <= 0 || ~any(mask)
-    return;
-end
-runList = find_invalid_runs(~mask);
-for idx = 1:size(runList, 1)
-    startIdx = runList(idx, 1);
-    endIdx = runList(idx, 2);
-    runLen = endIdx - startIdx + 1;
-    if runLen <= maxGap && startIdx > 1 && endIdx < numel(mask) && mask(startIdx - 1) && mask(endIdx + 1)
-        mask(startIdx:endIdx) = true;
-    end
-end
-end
-
-
 function mask = keep_min_run_length(mask, minLen)
 mask = logical(mask(:).');
 if minLen <= 1 || ~any(mask)
@@ -1987,7 +1608,6 @@ fpStruct = struct( ...
     'maxJumpPerCol', sideCfg.maxJumpPerCol, ...
     'smoothPenalty', sideCfg.smoothPenalty, ...
     'markerPenalty', sideCfg.markerPenalty, ...
-    'marker', sideCfg.marker, ...
     'fit', fitCfg, ...
     'top', topCfg, ...
     'bottom', botCfg);
@@ -2056,23 +1676,6 @@ gray = im2double(gray);
 end
 
 
-function out = normalize_vector(vec)
-vals = vec(isfinite(vec));
-if isempty(vals)
-    out = zeros(size(vec));
-    return;
-end
-
-vMin = min(vals);
-vMax = max(vals);
-if vMax - vMin < eps
-    out = ones(size(vec));
-else
-    out = max(0, min(1, (vec - vMin) / (vMax - vMin)));
-end
-end
-
-
 function out = clamp_values(vals, lo, hi)
 out = min(hi, max(lo, vals));
 end
@@ -2099,4 +1702,25 @@ val = 1.4826 * median(abs(x - xMed));
 if val < eps
     val = std(x);
 end
+end
+
+
+function out = range_sum(cumVals, startIdx, endIdx)
+if startIdx > endIdx
+    out = 0;
+    return;
+end
+
+out = cumVals(endIdx + 1) - cumVals(startIdx);
+end
+
+
+function out = range_mean(cumVals, startIdx, endIdx)
+count = endIdx - startIdx + 1;
+if count <= 0
+    out = NaN;
+    return;
+end
+
+out = range_sum(cumVals, startIdx, endIdx) / count;
 end
