@@ -75,7 +75,7 @@ end
 
 %% 辅助函数
 function cfg = get_cfg()
-cfg.dir.img = './testdata';
+cfg.dir.img = './data';
 cfg.dir.ext = '*.bmp';
 
 cfg.step.nominal = 900;
@@ -180,13 +180,13 @@ cfg.sideEdge.bottom.maxInwardOverridePx = 8;
 cfg.sideEdge.bottom.bandEvidenceWeight = 0.18;
 
 cfg.end.left.label = '左端';
-cfg.end.left.imgAbs = 'C:\Users\11603\Documents\MATLAB\GlassTube\40.12-30.49.bmp';
+cfg.end.left.imgAbs = 'C:\Users\11603\Documents\MATLAB\GlassTube\1.bmp';
 cfg.end.left.innerCsv = 'left_end_inner.csv';
 cfg.end.left.outerCsv = 'left_end_outer.csv';
 cfg.end.left.cacheMat = 'left_end_analysis.mat';
 
 cfg.end.right.label = '右端';
-cfg.end.right.imgAbs = 'C:\Users\11603\Documents\MATLAB\GlassTube\test.bmp';
+cfg.end.right.imgAbs = 'C:\Users\11603\Documents\MATLAB\GlassTube\2.bmp';
 cfg.end.right.innerCsv = 'right_end_inner.csv';
 cfg.end.right.outerCsv = 'right_end_outer.csv';
 cfg.end.right.cacheMat = 'right_end_analysis.mat';
@@ -552,10 +552,10 @@ wall.outerR = outerR;
 wall.thick = thick;
 wall.maxVal = max(thick);
 wall.minVal = min(thick);
-wall.maxP1 = [round(innerFit.cy) + innerR(maxMask) * cos(ang(maxMask)), round(innerFit.cx) + innerR(maxMask) * sin(ang(maxMask))];
-wall.maxP2 = [round(innerFit.cy) + outerR(maxMask) * cos(ang(maxMask)), round(innerFit.cx) + outerR(maxMask) * sin(ang(maxMask))];
-wall.minP1 = [round(innerFit.cy) + innerR(minMask) * cos(ang(minMask)), round(innerFit.cx) + innerR(minMask) * sin(ang(minMask))];
-wall.minP2 = [round(innerFit.cy) + outerR(minMask) * cos(ang(minMask)), round(innerFit.cx) + outerR(minMask) * sin(ang(minMask))];
+wall.maxP1 = [round(innerFit.cy) + innerR(maxMask) .* cos(ang(maxMask)), round(innerFit.cx) + innerR(maxMask) .* sin(ang(maxMask))];
+wall.maxP2 = [round(innerFit.cy) + outerR(maxMask) .* cos(ang(maxMask)), round(innerFit.cx) + outerR(maxMask) .* sin(ang(maxMask))];
+wall.minP1 = [round(innerFit.cy) + innerR(minMask) .* cos(ang(minMask)), round(innerFit.cx) + innerR(minMask) .* sin(ang(minMask))];
+wall.minP2 = [round(innerFit.cy) + outerR(minMask) .* cos(ang(minMask)), round(innerFit.cx) + outerR(minMask) .* sin(ang(minMask))];
 end
 
 
