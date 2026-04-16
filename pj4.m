@@ -75,7 +75,7 @@ end
 
 %% 辅助函数
 function cfg = get_cfg()
-cfg.dir.img = './GlassTubeData';
+cfg.dir.img = './testdata';
 cfg.dir.ext = '*.bmp';
 
 cfg.step.nominal = 900;
@@ -191,6 +191,7 @@ cfg.end.right.innerCsv = 'right_end_inner.csv';
 cfg.end.right.outerCsv = 'right_end_outer.csv';
 cfg.end.right.cacheMat = 'right_end_analysis.mat';
 cfg.end.forceRecompute = false;
+cfg.end.supportExtremeCount = 30;
 end
 
 
@@ -330,7 +331,7 @@ writematrix(innerMask, endCfg.innerCsv);
 
 innerFit = fit_circle_ls(innerPts);
 outerFit = fit_circle_ls(outerPts);
-support = compute_end_inner_support(innerPts, outerPts, cfg.scale.endPxPerMm);
+support = compute_end_inner_support(innerPts, outerPts, cfg.scale.endPxPerMm, cfg.end.supportExtremeCount);
 
 wall = [];
 if is_debug_display_enabled(cfg)
@@ -678,13 +679,13 @@ end
 
 if isfield(endData, 'outerPts') && isfield(endData, 'innerPts') && ...
         ~isempty(endData.outerPts) && ~isempty(endData.innerPts)
-    support = compute_end_inner_support(endData.innerPts, endData.outerPts, cfg.scale.endPxPerMm);
+    support = compute_end_inner_support(endData.innerPts, endData.outerPts, cfg.scale.endPxPerMm, cfg.end.supportExtremeCount);
     return;
 end
 
 ptsOut = fix_dims(readmatrix(endData.outerFile));
 ptsIn = fix_dims(readmatrix(endData.innerFile));
-support = compute_end_inner_support(ptsIn, ptsOut, cfg.scale.endPxPerMm);
+support = compute_end_inner_support(ptsIn, ptsOut, cfg.scale.endPxPerMm, cfg.end.supportExtremeCount);
 end
 
 function opt = optimize_straight_rod_axis(xVal, innerTop, innerBot)
@@ -859,12 +860,14 @@ end
 end
 
 
-function support = compute_end_inner_support(innerPts, outerPts, endPxPerMm)
+function support = compute_end_inner_support(innerPts, outerPts, endPxPerMm, supportPointCount)
 ctrOut = mean(outerPts, 1);
 relY = innerPts(:, 1) - ctrOut(1);
+relY = sort(relY(:));
+k = min(max(1, round(supportPointCount)), numel(relY));
 
-support.topRel = min(relY) / endPxPerMm;
-support.botRel = max(relY) / endPxPerMm;
+support.topRel = mean(relY(1:k)) / endPxPerMm;
+support.botRel = mean(relY(end-k+1:end)) / endPxPerMm;
 support.projDia = support.botRel - support.topRel;
 support.centerRel = mean(relY) / endPxPerMm;
 end
