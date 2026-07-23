@@ -1,181 +1,142 @@
-close all;
-clear;
-clc;
+function calibration = calibrate_standard_block_scale(outputFile)
+%CALIBRATE_STANDARD_BLOCK_SCALE Calibrate both camera scales with Canny edges.
+%   CALIBRATION = CALIBRATE_STANDARD_BLOCK_SCALE() analyzes the two standard
+%   block images and saves a versioned calibration MAT file under results/.
+%   TLS line fitting removes the need to rotate and resample calibration images.
 
-set(groot, 'defaultFigureUnits', 'normalized');
-set(groot, 'defaultFigurePosition', [0, 0, 1, 1]);
-set(groot, 'defaultFigureWindowState', 'maximized');
-
+rootDir = fileparts(mfilename('fullpath'));
+if nargin < 1 || isempty(outputFile)
+    outputFile = fullfile(rootDir, 'results', 'glass_tube_calibration.mat');
+end
 knownLengthMm = 30;
-cannySigma = 1.5;
-cannyTh = [0.15, 0.25];
-minValidRows = 50;
-minComponentArea = 30;
-angleTolDeg = 15;
-trimFrac = 0.05;
-maxParallelAngleDeg = 3;
+opts = struct('cannySigma', 1.5, 'cannyThreshold', [0.15 0.25], ...
+    'minComponentArea', 30, 'minimumRows', 50, 'angleToleranceDeg', 15, ...
+    'trimFraction', 0.05, 'maximumParallelAngleDeg', 3);
 
-cameras = {
-    struct('label', 'top camera',  'file', 'biaozhun2.bmp', 'angle', -0.39), ...
-    struct('label', 'side camera', 'file', 'biaozhun1.bmp', 'angle', 0.00)
-};
+cameras = [ ...
+    struct('role', 'side', 'label', 'longitudinal side view', ...
+        'file', fullfile(rootDir, 'biaozhun2.bmp')), ...
+    struct('role', 'end', 'label', 'end face', ...
+        'file', fullfile(rootDir, 'biaozhun1.bmp'))];
 
+records = repmat(struct(), numel(cameras), 1);
 for idx = 1:numel(cameras)
-    cam = cameras{idx};
-    grayImg = preprocess_standard_block(cam.file, cam.angle, cannySigma);
-    [gradX, gradY] = imgradientxy(grayImg, 'sobel');
-    edgeMask = edge(grayImg, 'Canny', cannyTh);
-    edgeMask = bwareaopen(edgeMask, minComponentArea);
-
-    [leftPts, rightPts] = sample_left_right_points( ...
-        edgeMask, gradX, gradY, minValidRows, angleTolDeg, trimFrac);
-    pixelWidth = measure_parallel_distance( ...
-        leftPts, rightPts, minValidRows, maxParallelAngleDeg);
-    pxPerMm = pixelWidth / knownLengthMm;
-
-    fprintf('%s (%s): pixelWidth = %.2f px, scale = %.6f px/mm\n', ...
-        cam.label, cam.file, pixelWidth, pxPerMm);
-end
-
-
-function grayImg = preprocess_standard_block(fileName, rotateAngle, cannySigma)
-img = imread(fileName);
-
-if ndims(img) == 3
-    grayImg = rgb2gray(img);
-else
-    grayImg = img;
-end
-
-grayImg = im2double(grayImg);
-
-if rotateAngle ~= 0
-    grayImg = imrotate(grayImg, rotateAngle, 'bicubic', 'crop');
-end
-
-grayImg = imgaussfilt(grayImg, cannySigma);
-end
-
-
-function [leftPts, rightPts] = sample_left_right_points( ...
-    edgeMask, gradX, gradY, minValidRows, angleTolDeg, trimFrac)
-[~, colN] = size(edgeMask);
-borderMargin = max(10, round(colN * 0.01));
-angleTol = angleTolDeg * pi / 180;
-
-if colN <= 2 * borderMargin + 1
-    error('Image width is too small after applying the border margin.');
-end
-
-gradAngle = atan2(abs(gradY), abs(gradX));
-verticalMask = gradAngle <= angleTol;
-candidateMask = edgeMask & verticalMask;
-
-leftPts = nan(size(edgeMask, 1), 2);
-rightPts = nan(size(edgeMask, 1), 2);
-validN = 0;
-
-for row = 1:size(edgeMask, 1)
-    rowMask = candidateMask(row, borderMargin + 1:colN - borderMargin);
-    xs = find(rowMask);
-    if numel(xs) < 2
-        continue;
+    cam = cameras(idx);
+    if ~isfile(cam.file)
+        error('GlassTube:CalibrationImageMissing', 'Missing calibration image: %s', cam.file);
     end
+    img = imread(cam.file);
+    if ndims(img) == 3, img = im2gray(img); end
+    gray = im2single(img);
+    [gradX, gradY] = imgradientxy(gray, 'sobel');
+    edgeMask = edge(gray, 'Canny', opts.cannyThreshold, opts.cannySigma);
+    edgeMask = bwareaopen(edgeMask, opts.minComponentArea);
+    [leftPts, rightPts] = sample_parallel_edges(edgeMask, gradX, gradY, opts);
+    measurement = measure_parallel_distance(leftPts, rightPts, opts);
 
-    validN = validN + 1;
-    leftX = xs(1) + borderMargin;
-    rightX = xs(end) + borderMargin;
-    leftPts(validN, :) = [leftX, row];
-    rightPts(validN, :) = [rightX, row];
+    records(idx).role = cam.role;
+    records(idx).label = cam.label;
+    records(idx).image = cam.file;
+    records(idx).knownLengthMm = knownLengthMm;
+    records(idx).pixelWidth = measurement.pixelWidth;
+    records(idx).pxPerMm = measurement.pixelWidth / knownLengthMm;
+    records(idx).distanceMadPx = measurement.distanceMadPx;
+    records(idx).fitAngleDifferenceDeg = measurement.angleDifferenceDeg;
+    records(idx).validRowCount = measurement.validRowCount;
+    records(idx).sha256 = file_sha256(cam.file);
+    fprintf('%s: %.3f px, %.6f px/mm, MAD %.4f px\n', ...
+        cam.label, measurement.pixelWidth, records(idx).pxPerMm, measurement.distanceMadPx);
 end
 
-leftPts = leftPts(1:validN, :);
-rightPts = rightPts(1:validN, :);
+calibration = struct();
+calibration.algorithmVersion = 'calibrate-standard-block-2.0.0';
+calibration.createdAt = char(datetime('now', 'Format', 'yyyy-MM-dd HH:mm:ss Z'));
+calibration.sidePxPerMm = records(strcmp({records.role}, 'side')).pxPerMm;
+calibration.endPxPerMm = records(strcmp({records.role}, 'end')).pxPerMm;
+calibration.records = records;
+calibration.options = opts;
 
-if size(leftPts, 1) < minValidRows || size(rightPts, 1) < minValidRows
-    error('Calibration failed: only %d valid rows were found.', size(leftPts, 1));
+outDir = fileparts(outputFile);
+if ~isempty(outDir) && ~isfolder(outDir), mkdir(outDir); end
+save(outputFile, 'calibration');
 end
 
-yVals = leftPts(:, 2);
-yLow = prctile(yVals, trimFrac * 100);
-yHigh = prctile(yVals, (1 - trimFrac) * 100);
-keepMask = yVals >= yLow & yVals <= yHigh;
-
-leftPts = leftPts(keepMask, :);
-rightPts = rightPts(keepMask, :);
-
-if size(leftPts, 1) < minValidRows || size(rightPts, 1) < minValidRows
-    error('Calibration failed: only %d valid rows remained after trimming.', size(leftPts, 1));
+function [leftPts, rightPts] = sample_parallel_edges(edgeMask, gradX, gradY, opts)
+[rowN, colN] = size(edgeMask);
+border = max(10, round(colN * 0.01));
+angleTolerance = deg2rad(opts.angleToleranceDeg);
+gradAngle = atan2(abs(gradY), abs(gradX));
+candidates = edgeMask & gradAngle <= angleTolerance;
+leftPts = nan(rowN, 2); rightPts = nan(rowN, 2); count = 0;
+for row = 1:rowN
+    xs = find(candidates(row, border + 1:colN - border));
+    if numel(xs) < 2, continue; end
+    count = count + 1;
+    leftPts(count, :) = [xs(1) + border, row];
+    rightPts(count, :) = [xs(end) + border, row];
 end
+leftPts = leftPts(1:count, :); rightPts = rightPts(1:count, :);
+if count < opts.minimumRows
+    error('GlassTube:CalibrationInsufficientEdges', 'Only %d usable rows were found.', count);
 end
-
-
-function pixelWidth = measure_parallel_distance( ...
-    leftPts, rightPts, minValidRows, maxParallelAngleDeg)
-leftLine = fit_line_tls(leftPts);
-rightLine = fit_line_tls(rightPts);
-
-[leftPts, leftLine] = refine_line_fit(leftPts, leftLine, minValidRows);
-[rightPts, rightLine] = refine_line_fit(rightPts, rightLine, minValidRows);
-
-dirLeft = leftLine.dir;
-dirRight = rightLine.dir;
-if dot(dirLeft, dirRight) < 0
-    dirRight = -dirRight;
+y = leftPts(:, 2);
+keep = y >= prctile(y, 100 * opts.trimFraction) & ...
+    y <= prctile(y, 100 * (1 - opts.trimFraction));
+leftPts = leftPts(keep, :); rightPts = rightPts(keep, :);
 end
 
-cosTheta = max(-1, min(1, dot(dirLeft, dirRight)));
-angleDeg = acosd(cosTheta);
-if angleDeg > maxParallelAngleDeg
-    error('Calibration failed: left/right edge angle mismatch is %.3f deg.', angleDeg);
+function measurement = measure_parallel_distance(leftPts, rightPts, opts)
+[leftPts, leftLine] = robust_line(leftPts, opts.minimumRows);
+[rightPts, rightLine] = robust_line(rightPts, opts.minimumRows);
+dirLeft = leftLine.direction; dirRight = rightLine.direction;
+if dot(dirLeft, dirRight) < 0, dirRight = -dirRight; end
+angleDifference = acosd(max(-1, min(1, dot(dirLeft, dirRight))));
+if angleDifference > opts.maximumParallelAngleDeg
+    error('GlassTube:CalibrationNonparallelEdges', ...
+        'Calibration edges differ by %.3f degrees.', angleDifference);
+end
+commonDirection = dirLeft + dirRight;
+commonDirection = commonDirection / norm(commonDirection);
+normal = [-commonDirection(2), commonDirection(1)];
+leftDistance = leftPts * normal.'; rightDistance = rightPts * normal.';
+pixelWidth = abs(median(rightDistance) - median(leftDistance));
+edgeResidual = [leftDistance - median(leftDistance); rightDistance - median(rightDistance)];
+measurement = struct('pixelWidth', pixelWidth, ...
+    'distanceMadPx', median(abs(edgeResidual - median(edgeResidual))), ...
+    'angleDifferenceDeg', angleDifference, ...
+    'validRowCount', min(size(leftPts, 1), size(rightPts, 1)));
 end
 
-dirCommon = dirLeft + dirRight;
-dirNorm = norm(dirCommon);
-if dirNorm < eps
-    error('Calibration failed: unable to build a common edge direction.');
+function [inliers, line] = robust_line(points, minimumRows)
+line = fit_tls(points);
+residual = abs(points * line.normal.' - line.offset);
+med = median(residual); scale = median(abs(residual - med));
+keep = residual <= max(1, med + 3 * scale);
+inliers = points(keep, :);
+if size(inliers, 1) < minimumRows
+    error('GlassTube:CalibrationInsufficientInliers', 'Only %d line inliers remain.', size(inliers, 1));
 end
-dirCommon = dirCommon / dirNorm;
-nCommon = [-dirCommon(2), dirCommon(1)];
-nCommon = nCommon / norm(nCommon);
-
-dLeft = median(leftPts * nCommon.');
-dRight = median(rightPts * nCommon.');
-pixelWidth = abs(dRight - dLeft);
-
-if ~isfinite(pixelWidth) || pixelWidth <= 0
-    error('Calibration failed: measured pixel width is invalid.');
-end
+line = fit_tls(inliers);
 end
 
-
-function lineModel = fit_line_tls(points)
-centroid = mean(points, 1);
-centered = points - centroid;
-[~, ~, basis] = svd(centered, 0);
-dir = basis(:, 1).';
-dir = dir / norm(dir);
-normal = [-dir(2), dir(1)];
-normal = normal / norm(normal);
-
-lineModel.centroid = centroid;
-lineModel.dir = dir;
-lineModel.normal = normal;
-lineModel.d = dot(normal, centroid);
+function line = fit_tls(points)
+center = mean(points, 1);
+[~, ~, basis] = svd(points - center, 0);
+direction = basis(:, 1).'; direction = direction / norm(direction);
+normal = [-direction(2), direction(1)];
+line = struct('center', center, 'direction', direction, ...
+    'normal', normal, 'offset', dot(normal, center));
 end
 
-
-function [inlierPts, lineModel] = refine_line_fit(points, lineModel, minValidRows)
-residuals = abs(points * lineModel.normal.' - lineModel.d);
-resMed = median(residuals);
-resMad = median(abs(residuals - resMed));
-thr = max(resMed + 3 * resMad, 1.0);
-inlierMask = residuals <= thr;
-inlierPts = points(inlierMask, :);
-
-if size(inlierPts, 1) < minValidRows
-    error('Calibration failed: only %d inlier points remained after line fitting.', size(inlierPts, 1));
+function digest = file_sha256(path)
+md = java.security.MessageDigest.getInstance('SHA-256');
+fid = fopen(path, 'rb');
+if fid < 0, error('GlassTube:FileHashFailed', 'Cannot open %s.', path); end
+try
+    bytes = fread(fid, inf, '*uint8'); fclose(fid);
+catch cause
+    fclose(fid); rethrow(cause);
 end
-
-lineModel = fit_line_tls(inlierPts);
+md.update(bytes);
+digest = lower(reshape(dec2hex(typecast(md.digest(), 'uint8'), 2).', 1, []));
 end
